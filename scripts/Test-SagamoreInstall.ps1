@@ -5,7 +5,8 @@
 
 .DESCRIPTION
     Makes no changes. Checks groups, site, library permissions, every planned folder's permissions,
-    any extra locked folders (Invoices) found under Clients/, and Teams channels.
+    any extra locked folders (Invoices) found under Clients/, and Teams channels (client channels must be
+    private and contain exactly the invited people).
     Writes audit-<timestamp>.csv to the logs folder. Exit code 0 = everything matches, 1 = drift found.
 #>
 [CmdletBinding()]
@@ -125,9 +126,29 @@ try {
             Add-Row 'Teams' $cfg.site.title 'FAIL' 'group is not a Team'
         } else {
             $gid = Get-SagamoreProp $m365 'id'
-            $have = @(Get-PnPTeamsChannel -Team $gid | ForEach-Object { $_.DisplayName.ToLower() })
+            $have = @{}
+            foreach ($ch in @(Get-PnPTeamsChannel -Team $gid)) { $have[$ch.DisplayName.ToLower()] = $ch }
+            $me = Get-SagamoreProp (Invoke-PnPGraphMethod -Url 'me?$select=userPrincipalName') 'userPrincipalName'
+            $keepIds = @(@(Get-OrDefault $cfg.site 'adminUpns' @()) + @($me) | Where-Object { $_ } | ForEach-Object { Get-SagamoreUserId -Upn $_ } | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
             foreach ($c in Get-SagamoreChannelPlan -Config $cfg -ExtraClients $extra) {
-                if ($c.Channel.ToLower() -in $have) { Add-Row 'Channel' $c.Channel 'PASS' } else { Add-Row 'Channel' $c.Channel 'FAIL' 'missing' }
+                $ch = $have[$c.Channel.ToLower()]
+                if (-not $ch) { Add-Row 'Channel' $c.Channel 'FAIL' 'missing'; continue }
+                if ($c.Type -ne 'Private') { Add-Row 'Channel' $c.Channel 'PASS' "$($ch.MembershipType)"; continue }
+                if ("$($ch.MembershipType)" -ine 'private') { Add-Row 'Channel' $c.Channel 'FAIL' "SILO BREACH: $($ch.MembershipType) channel, visible to the whole Team"; continue }
+                $desired = @{}; $upnById = @{}
+                foreach ($u in @($c.Owners) + @($c.Members)) {
+                    $id = Get-SagamoreUserId -Upn $u
+                    if ($id) { $upnById[$id.ToLower()] = $u; $desired[$id.ToLower()] = if ($u -in $c.Owners) { 'owner' } else { 'member' } }
+                    else { Add-Row 'Channel' $c.Channel 'FAIL' "$u is invited but does not exist in Entra ID" }
+                }
+                $actual = Get-SagamoreChannelMembers -TeamId $gid -Channel $ch.Id
+                $diff = Compare-SagamoreChannelMembers -Desired $desired -Actual $actual -KeepIds $keepIds
+                if ($diff.Count) {
+                    $txt = ($diff | ForEach-Object { $who = if ($upnById[$_.UserId]) { $upnById[$_.UserId] } else { $actual[$_.UserId].Name }; "$($_.Issue) $who" }) -join '; '
+                    Add-Row 'Channel' $c.Channel 'FAIL' $txt
+                } else {
+                    Add-Row 'Channel' $c.Channel 'PASS' "private, $($desired.Count) invited"
+                }
             }
         }
     }

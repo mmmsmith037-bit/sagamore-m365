@@ -10,7 +10,8 @@
       3. Site settings: external sharing, versioning, "Add Only" permission level
       4. Library-level permissions (replaces the default "everyone in the Team can edit")
       5. Folder tree + per-folder permissions, including Invoices lock-down at any depth
-      6. Microsoft Teams: team, owners/members, one channel per client + Files tab
+      6. Microsoft Teams: team, owners/members, one PRIVATE channel per client whose members are exactly the
+         people invited to that client (missing invited, uninvited removed) + Client Files tab
       7. Permission report (CSV) written locally and to _Admin/Permissions-Log
 
 .PARAMETER ConfigPath
@@ -80,7 +81,14 @@ function Show-Plan {
     }
     if ($doTeams) {
         Write-SagamoreSection 'Plan: Teams channels'
-        foreach ($c in $Channels) { Write-SagamoreLog ("{0,-40} {1}" -f $c.Channel, ($c.Folder ?? '')) -Level PLAN }
+        foreach ($c in $Channels) {
+            if ($c.Type -eq 'Private') {
+                $inv = if ($c.Members) { $c.Members -join ', ' } else { '(nobody invited yet)' }
+                Write-SagamoreLog ("{0,-30} private  owners: {1} | invited: {2}" -f $c.Channel, ($c.Owners -join ', '), $inv) -Level PLAN
+            } else {
+                Write-SagamoreLog ("{0,-30} standard (whole Team)" -f $c.Channel) -Level PLAN
+            }
+        }
     }
 }
 
@@ -361,24 +369,91 @@ try {
 
         if ($isTeam) {
             $channels = Get-SagamoreChannelPlan -Config $cfg -ExtraClients $extra
-            $existing = @(Get-PnPTeamsChannel -Team $groupId | ForEach-Object { $_.DisplayName.ToLower() })
+            $existing = @{}
+            foreach ($ch in @(Get-PnPTeamsChannel -Team $groupId)) { $existing[$ch.DisplayName.ToLower()] = $ch }
+            $keepIds = @(@($adminUpns) + @($me) | Where-Object { $_ } | ForEach-Object { Get-SagamoreUserId -Upn $_ } | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
             foreach ($c in $channels) {
-                if ($c.Channel.ToLower() -in $existing) {
-                    Write-SagamoreLog "Channel exists: $($c.Channel)" -Level SKIP
-                } elseif ($PSCmdlet.ShouldProcess($c.Channel, 'Create Teams channel')) {
+                $ch = $existing[$c.Channel.ToLower()]
+                if ($ch) {
+                    if ($c.Type -eq 'Private' -and "$($ch.MembershipType)" -ine 'private') {
+                        Add-Warning ("SILO BREACH: '$($c.Channel)' is a $($ch.MembershipType) channel, so every Team member can read it. " +
+                            'Teams cannot convert it to private. Move anything needed out of it, delete the channel in Teams, then re-run this script.')
+                        $report.Add([pscustomobject]@{ Folder = "Teams: $($c.Channel)"; Principal = '(all Team members)'; Role = 'SILO BREACH'; Mode = "$($ch.MembershipType)" })
+                        continue
+                    }
+                    Write-SagamoreLog "Channel exists: $($c.Channel) ($($ch.MembershipType))" -Level SKIP
+                } elseif ($PSCmdlet.ShouldProcess($c.Channel, "Create $($c.Type.ToLower()) Teams channel")) {
                     try {
-                        Add-PnPTeamsChannel -Team $groupId -DisplayName $c.Channel | Out-Null
-                        Write-SagamoreLog "Created channel: $($c.Channel)" -Level SUCCESS
+                        if ($c.Type -eq 'Private') {
+                            $firstOwner = @($c.Owners | Where-Object { Get-SagamoreUserId -Upn $_ })[0]
+                            if (-not $firstOwner) { throw 'no Owner person exists in Entra ID to own the private channel' }
+                            $ch = Invoke-SagamoreRetry -What "Create private channel $($c.Channel)" -Attempts 4 -DelaySeconds 15 -Action {
+                                Add-PnPTeamsChannel -Team $groupId -DisplayName $c.Channel -ChannelType Private -OwnerUPN $firstOwner -Description "Private client channel. Only invited people can see it."
+                            }
+                        } else {
+                            $ch = Add-PnPTeamsChannel -Team $groupId -DisplayName $c.Channel
+                        }
+                        Write-SagamoreLog "Created $($c.Type.ToLower()) channel: $($c.Channel)" -Level SUCCESS
                     } catch { Add-Warning "Could not create channel $($c.Channel): $($_.Exception.Message)"; continue }
+                } else {
+                    if ($c.Type -eq 'Private') {
+                        Write-SagamoreLog "would invite to $($c.Channel): owners $($c.Owners -join ', '); members $(if ($c.Members) { $c.Members -join ', ' } else { '(none)' })" -Level PLAN
+                    }
+                    continue
                 }
+
+                # Private channel membership = exactly the people invited in config (installer admins are left alone).
+                if ($c.Type -eq 'Private') {
+                    $desired = @{}; $upnById = @{}
+                    foreach ($u in @($c.Owners) + @($c.Members)) {
+                        $id = Get-SagamoreUserId -Upn $u
+                        if (-not $id) { Add-Warning "$u is invited to $($c.Channel) but does not exist in Entra ID."; continue }
+                        $id = $id.ToLower(); $upnById[$id] = $u
+                        $desired[$id] = if ($u -in $c.Owners) { 'owner' } else { 'member' }
+                    }
+                    try {
+                        $chId = $ch.Id
+                        $actual = Invoke-SagamoreRetry -What "Read members of $($c.Channel)" -Attempts 4 -DelaySeconds 15 -Action { Get-SagamoreChannelMembers -TeamId $groupId -Channel $chId }
+                    } catch { Add-Warning "Could not read members of $($c.Channel): $($_.Exception.Message)"; continue }
+                    foreach ($d in Compare-SagamoreChannelMembers -Desired $desired -Actual $actual -KeepIds $keepIds) {
+                        $who = if ($upnById[$d.UserId]) { $upnById[$d.UserId] } else { $actual[$d.UserId].Name }
+                        $role = if ($d.Expected -eq 'owner') { 'Owner' } else { 'Member' }
+                        try {
+                            switch ($d.Issue) {
+                                'Missing' {
+                                    if ($PSCmdlet.ShouldProcess($c.Channel, "Invite $who as $role")) {
+                                        Add-PnPTeamsChannelUser -Team $groupId -Channel $ch.Id -User $who -Role $role
+                                        Write-SagamoreLog "  invited $who to $($c.Channel) ($role)" -Level SUCCESS
+                                    }
+                                }
+                                'WrongRole' {
+                                    if ($PSCmdlet.ShouldProcess($c.Channel, "Change $who to $role")) {
+                                        Set-PnPTeamsChannelUser -Team $groupId -Channel $ch.Id -Identity $actual[$d.UserId].Member -Role $role
+                                        Write-SagamoreLog "  $who is now $role in $($c.Channel)" -Level SUCCESS
+                                    }
+                                }
+                                'Unexpected' {
+                                    if ($PSCmdlet.ShouldProcess($c.Channel, "Remove $who (not invited in config)")) {
+                                        Remove-PnPTeamsChannelUser -Team $groupId -Channel $ch.Id -Identity $actual[$d.UserId].Member -Force
+                                        Write-SagamoreLog "  removed $who from $($c.Channel) (not invited)" -Level SUCCESS
+                                    }
+                                }
+                            }
+                        } catch { Add-Warning "$($d.Issue) $who in $($c.Channel): $($_.Exception.Message)" }
+                    }
+                    foreach ($id in $desired.Keys) {
+                        $report.Add([pscustomobject]@{ Folder = "Teams: $($c.Channel)"; Principal = $upnById[$id]; Role = $desired[$id]; Mode = 'Private channel' })
+                    }
+                }
+
                 if ($c.Folder) {
                     $tabName = 'Client Files'
                     try {
-                        $tabs = @(Get-PnPTeamsTab -Team $groupId -Channel $c.Channel | ForEach-Object DisplayName)
+                        $tabs = @(Get-PnPTeamsTab -Team $groupId -Channel $ch.Id | ForEach-Object DisplayName)
                         if ($tabName -in $tabs) { continue }
                         $url = "$siteUrl/" + (((@($libUrl) + ($c.Folder -split '/')) | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/')
                         if ($PSCmdlet.ShouldProcess($c.Channel, "Add '$tabName' tab -> $($c.Folder)")) {
-                            Add-PnPTeamsTab -Team $groupId -Channel $c.Channel -DisplayName $tabName -Type DocumentLibrary -ContentUrl $url | Out-Null
+                            Add-PnPTeamsTab -Team $groupId -Channel $ch.Id -DisplayName $tabName -Type DocumentLibrary -ContentUrl $url | Out-Null
                             Write-SagamoreLog "Tab added: $($c.Channel) -> $($c.Folder)" -Level SUCCESS
                         }
                     } catch { Add-Warning "Could not add Files tab to $($c.Channel): $($_.Exception.Message)" }

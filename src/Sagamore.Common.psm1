@@ -191,6 +191,17 @@ function Test-SagamoreConfig {
         }
     }
 
+    # Client silo: inside a client, access is granted to named people only, never to a whole role group.
+    $checkSilo = {
+        param($access, [string]$where)
+        if ($access -isnot [System.Collections.IDictionary]) { return }
+        foreach ($principal in $access.Keys) {
+            if ($principal -in @('Member', 'Support')) {
+                $errs.Add("$where.access: '$principal' would give every $principal access and breaks the client silo. Invite people by name instead.")
+            }
+        }
+    }
+
     & $checkAccess $Config.libraryAccess 'libraryAccess'
     if (-not (Get-OrDefault $Config.libraryAccess 'Owner')) { $errs.Add('libraryAccess must grant Owner access.') }
 
@@ -207,8 +218,10 @@ function Test-SagamoreConfig {
 
     $tpl = $Config.clientTemplate
     & $checkAccess (Get-OrDefault $tpl 'access') 'clientTemplate'
+    & $checkSilo (Get-OrDefault $tpl 'access') 'clientTemplate'
     foreach ($s in @(Get-OrDefault $tpl 'subfolders' @())) {
         & $checkAccess (Get-OrDefault $s 'access') "clientTemplate.subfolders['$($s.path)']"
+        & $checkSilo (Get-OrDefault $s 'access') "clientTemplate.subfolders['$($s.path)']"
     }
 
     $clientNames = @{}
@@ -219,11 +232,13 @@ function Test-SagamoreConfig {
         if ($clientNames.ContainsKey($name.ToLower())) { $errs.Add("clients: '$name' is listed twice.") }
         $clientNames[$name.ToLower()] = $true
         & $checkAccess (Get-OrDefault $c 'access') "clients['$name']"
+        & $checkSilo (Get-OrDefault $c 'access') "clients['$name']"
         foreach ($cf in @(Get-OrDefault $c 'folders' @())) {
             $cp = ConvertTo-SagamorePath ([string](Get-OrDefault $cf 'path' ''))
             if (-not $cp) { $errs.Add("clients['$name'].folders: an entry has an empty path.") }
             elseif ($cp -match $script:InvalidPathChar) { $errs.Add("clients['$name'].folders: '$cp' contains a character SharePoint does not allow.") }
             & $checkAccess (Get-OrDefault $cf 'access') "clients['$name'].folders['$cp']"
+            & $checkSilo (Get-OrDefault $cf 'access') "clients['$name'].folders['$cp']"
         }
     }
 
@@ -336,22 +351,39 @@ function Get-SagamoreLockedAccess {
 }
 
 function Get-SagamoreChannelPlan {
+    <#
+        Teams channels to create:
+          @{ Channel; Folder; Type = 'Standard'|'Private'; Owners = [upn]; Members = [upn] }
+        Client channels are always PRIVATE (client silo). Owners = people with role Owner.
+        Members = the people invited by name on that client's folder (clients[].access).
+        Owners/Members are only set for private channels; standard channels are open to the whole Team.
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Config, [string[]]$ExtraClients = @())
     $teams = Get-OrDefault $Config 'teams' @{}
     if (-not (Get-OrDefault $teams 'enabled' $true)) { return @() }
+    $ownerUpns = @($Config.people | Where-Object { $_.role -eq 'Owner' } | ForEach-Object { $_.upn.ToLower() })
     $names = [System.Collections.Generic.List[object]]::new()
     foreach ($x in @(Get-OrDefault $teams 'extraChannels' @())) {
-        $names.Add([pscustomobject]@{ Channel = (ConvertTo-SagamoreChannelName $x); Folder = $null })
+        $names.Add([pscustomobject]@{ Channel = (ConvertTo-SagamoreChannelName $x); Folder = $null; Type = 'Standard'; Owners = @(); Members = @() })
     }
     if (Get-OrDefault $teams 'channelPerClient' $true) {
+        $byName = @{}
+        foreach ($c in @($Config.clients)) { if ($c.name) { $byName[$c.name.ToLower()] = $c } }
         $all = @($Config.clients | ForEach-Object { $_.name }) + $ExtraClients | Where-Object { $_ } | Select-Object -Unique
-        foreach ($c in $all) {
-            $names.Add([pscustomobject]@{ Channel = (ConvertTo-SagamoreChannelName $c); Folder = "Clients/$c" })
+        foreach ($name in $all) {
+            $client = $byName[$name.ToLower()]
+            $access = if ($client) { Get-OrDefault $client 'access' (Get-OrDefault $Config.clientTemplate 'access') } else { Get-OrDefault $Config.clientTemplate 'access' }
+            $invited = @()
+            if ($access -is [System.Collections.IDictionary]) {
+                $invited = @($access.Keys | Where-Object { $_ -match '@' } | ForEach-Object { $_.ToLower() } | Where-Object { $_ -notin $ownerUpns } | Sort-Object -Unique)
+            }
+            $names.Add([pscustomobject]@{ Channel = (ConvertTo-SagamoreChannelName $name); Folder = "Clients/$name"; Type = 'Private'; Owners = $ownerUpns; Members = $invited })
         }
     }
-    # Teams channel names are case-insensitively unique
-    return @($names | Group-Object { $_.Channel.ToLower() } | ForEach-Object { $_.Group[0] })
+    # Teams channel names are case-insensitively unique; keep the first, in config order
+    $seen = @{}
+    return @($names | Where-Object { $k = $_.Channel.ToLower(); if ($seen.ContainsKey($k)) { $false } else { $seen[$k] = $true; $true } })
 }
 
 function Resolve-SagamorePrincipal {

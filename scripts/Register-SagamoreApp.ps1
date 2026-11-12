@@ -13,7 +13,7 @@
       SharePoint: AllSites.FullControl
       Graph:      Group.ReadWrite.All, User.Read.All, Directory.Read.All,
                   Team.Create, TeamSettings.ReadWrite.All, TeamMember.ReadWrite.All,
-                  Channel.Create, Channel.ReadBasic.All, TeamsTab.ReadWrite.All
+                  Channel.Create, Channel.ReadBasic.All, ChannelMember.ReadWrite.All, TeamsTab.ReadWrite.All
 
 .EXAMPLE
     ./scripts/Register-SagamoreApp.ps1
@@ -36,7 +36,7 @@ $tenant = "$($cfg.tenant.name).onmicrosoft.com"
 $graph = @(
     'Group.ReadWrite.All', 'User.Read.All', 'Directory.Read.All',
     'Team.Create', 'TeamSettings.ReadWrite.All', 'TeamMember.ReadWrite.All',
-    'Channel.Create', 'Channel.ReadBasic.All', 'TeamsTab.ReadWrite.All'
+    'Channel.Create', 'Channel.ReadBasic.All', 'ChannelMember.ReadWrite.All', 'TeamsTab.ReadWrite.All'
 )
 
 Write-Host "Registering '$ApplicationName' in $tenant ..." -ForegroundColor Cyan

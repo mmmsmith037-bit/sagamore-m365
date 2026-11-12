@@ -1,8 +1,12 @@
 # sagamore-m365
 
 Installs and manages the Sagamore Alliance SharePoint + Microsoft Teams environment: security groups,
-the team site, a locked-down folder structure (client Invoices are Owner-only), one Teams channel per
-client, and a local **Permission Manager** dashboard for changing who can see what.
+the team site, a locked-down folder structure, one **private** Teams channel per client, and a local
+**Permission Manager** dashboard for changing who can see what.
+
+**Clients are silos.** Nobody but the Owners can see a client until they are invited to it by name. An invitation
+opens that client's folder *and* adds them to its private Teams channel; removing it takes both away. Client
+Invoices folders stay Owner-only even for invited people.
 
 One file drives everything: `config/sagamore.config.json`. The dashboard edits it; the installer makes the
 tenant match it; the audit proves the tenant matches it.
@@ -41,7 +45,8 @@ Edit `config/sagamore.config.json`:
 - `tenant.name` — the part before `.sharepoint.com`
 - `people` — every staff member's real UPN and role (`Owner`, `Member`, `Support`)
 - `site.adminUpns` — your own admin UPN (the account that will run the installer)
-- `clients` — client folder names (or import them later with step 6)
+- `clients` — client folder names, and under each client's `access` the people invited to it by UPN
+  (or import the clients later with step 6 and invite people in the dashboard)
 
 The real config is git-ignored; it never gets committed.
 
@@ -110,10 +115,29 @@ To preview with sample data, run `python -m http.server` in the repo and open `h
 | `Internal/HR` | Full Control | Edit | — |
 | `_Templates` | Full Control | Read | Read |
 | `Clients` | Full Control | Read | Read |
-| `Clients/<client>` | Full Control | Edit* | Read* |
+| `Clients/<client>` | Full Control | invited only* | invited only* |
 | `Clients/<client>/Invoices` (any depth) | Full Control | — | — |
+| Teams channel per client | channel owner | invited only* | invited only* |
 
-\* Default from `clientTemplate`; per-client overrides (for example "only Jacquelin works on Meridian") go in that client's `access`.
+\* Each client's `access` lists the invited people by UPN and their level, for example
+`"jacquelin@sagamorealliance.com": "Edit"`. A client with no `access` is Owner-only. Whole groups
+("all Members", "all Support") are rejected anywhere under a client, so a silo can't be opened by accident.
+
+## Client silos and Teams channels
+
+- Every client channel is a **private** channel. Standard channels are only used for `teams.extraChannels` (e.g. Internal).
+- Channel owners are the Owner people. Channel members are exactly the people in that client's `access`.
+  Every run invites anyone missing and **removes anyone who isn't invited**. Installer admins (`site.adminUpns`)
+  are never removed.
+- To invite someone: dashboard → click the client folder → pick the person → **Invite** → Save, then run
+  `./scripts/Install-Sagamore.ps1 -PermissionsOnly`. To uninvite, click × next to them and do the same.
+- Someone given access only to a client *subfolder* (e.g. Laci "Add Only" on Meridian Deliverables) gets that
+  folder but is **not** in the channel. The dashboard warns that they can only reach it by link.
+- Each client channel has a **Client Files** tab pointing at `Clients/<client>`. Files dropped in the channel's
+  chat go to the private channel's own SharePoint site instead. Teams limits that site to channel members, so the silo still
+  holds, but invoices belong in the Client Files tab's `Invoices` folder.
+- If a client channel already exists as a *standard* channel (for example created by hand), Teams can't
+  convert it. The installer reports **SILO BREACH** and leaves it alone, and the audit fails. Move anything you need out of it, delete it in Teams, and re-run.
 
 Rules the code enforces:
 - The **Owner** group always keeps Full Control wherever permissions are customised. It can't be removed by config or dashboard.
@@ -136,20 +160,21 @@ Rules the code enforces:
 
 ## Known behaviour
 
-- **Teams channel folders**: each channel also creates an empty folder at the library root. That's how Teams works.
-  The per-client "Client Files" tab points at `Clients/<client>` instead.
-- **Channel visibility**: every Team member can read every standard channel's conversation, even for clients whose
-  folder they can't open. If client conversations must be private, switch those to private channels. That isn't automated yet.
+- **Standard channel folders**: standard channels (Internal) create a folder at the library root. That's how Teams works.
+  Private client channels don't. Each gets its own small SharePoint site instead.
+- **Team membership**: everyone in config is a member of the Team itself (needed before they can be invited
+  to a private channel). That only shows them the standard channels. Client channels stay invisible until invited.
 - **Access below a hidden parent**: someone with access to a subfolder but not its parent can only reach it from a
   link or "Shared with me". The dashboard warns when that happens.
 - **Removing people**: the installer warns about extra members in the security groups or Team but never removes
-  anyone automatically. Remove them in Entra ID / Teams.
+  them from those automatically. Remove them in Entra ID / Teams. Client channel membership *is* enforced (see above).
 
 ## Tests
 
 `./tests/Invoke-Tests.ps1` runs offline (no tenant):
-- config validation and folder-plan logic (Invoices lock, Owner protection, ordering, name sanitising)
-- **parity**: the dashboard's JavaScript and the installer's PowerShell produce the identical plan and validation errors
+- config validation and folder-plan logic (Invoices lock, Owner protection, client-silo rule, ordering, name sanitising)
+- private-channel plan: who is invited to which client channel, and the invite/remove comparison
+- **parity**: the dashboard's JavaScript and the installer's PowerShell produce the identical folder plan, channel invitations and validation errors
 - **contract**: every PnP cmdlet and parameter the scripts use exists in the installed PnP.PowerShell
 - PSScriptAnalyzer (errors) and parse checks
 

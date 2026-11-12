@@ -83,6 +83,52 @@ function Test-SagamoreUserExists {
     } catch { return $false }
 }
 
+$script:UserIdCache = @{}
+function Get-SagamoreUserId {
+    <# Entra object id for a UPN, or $null if the user does not exist. Cached per run. #>
+    param([Parameter(Mandatory)][string]$Upn)
+    $k = $Upn.ToLower()
+    if (-not $script:UserIdCache.ContainsKey($k)) {
+        try {
+            $u = Invoke-PnPGraphMethod -Url "users/$([uri]::EscapeDataString($Upn))?`$select=id"
+            $script:UserIdCache[$k] = Get-SagamoreProp $u 'id'
+        } catch { $script:UserIdCache[$k] = $null }
+    }
+    return $script:UserIdCache[$k]
+}
+
+function Get-SagamoreChannelMembers {
+    <# Members of a channel: @{ <userId lower> = @{ Name; Role = 'owner'|'member'|'guest'; Member = <TeamChannelMember> } } #>
+    param([Parameter(Mandatory)][string]$TeamId, [Parameter(Mandatory)]$Channel)
+    $out = @{}
+    foreach ($m in @(Get-PnPTeamsChannelUser -Team $TeamId -Channel $Channel)) {
+        $roles = @($m.Roles | ForEach-Object { "$_".ToLower() })
+        $role = if ('owner' -in $roles) { 'owner' } elseif ('guest' -in $roles) { 'guest' } else { 'member' }
+        $name = if ($m.Email) { $m.Email } else { $m.DisplayName }
+        if ($m.UserId) { $out[$m.UserId.ToLower()] = @{ Name = $name; Role = $role; Member = $m } }
+    }
+    return $out
+}
+
+function Compare-SagamoreChannelMembers {
+    <#
+        Pure comparison. Desired: @{ userId = 'owner'|'member' }. Actual: output of Get-SagamoreChannelMembers.
+        KeepIds (installer admins) are never reported as unexpected. Returns Missing / WrongRole / Unexpected rows.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Desired, [Parameter(Mandatory)][hashtable]$Actual, [string[]]$KeepIds = @())
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($id in $Desired.Keys) {
+        if (-not $Actual.ContainsKey($id)) { $rows.Add([pscustomobject]@{ Issue = 'Missing'; UserId = $id; Expected = $Desired[$id]; Actual = '' }) }
+        elseif ($Actual[$id].Role -ne $Desired[$id]) { $rows.Add([pscustomobject]@{ Issue = 'WrongRole'; UserId = $id; Expected = $Desired[$id]; Actual = $Actual[$id].Role }) }
+    }
+    foreach ($id in $Actual.Keys) {
+        if (-not $Desired.ContainsKey($id) -and $id -notin $KeepIds) {
+            $rows.Add([pscustomobject]@{ Issue = 'Unexpected'; UserId = $id; Expected = ''; Actual = $Actual[$id].Role })
+        }
+    }
+    return , $rows.ToArray()
+}
+
 function Find-SagamoreM365Group {
     param([Parameter(Mandatory)][string]$Alias)
     $safe = $Alias.Replace("'", "''")

@@ -40,6 +40,22 @@ Describe 'Config validation' {
         $c = New-TestConfig; $c.site.externalSharing = 'Anyone'
         (Test-SagamoreConfig -Config $c -AllowPlaceholderClientId) -join "`n" | Should -Match 'externalSharing'
     }
+    It 'rejects role groups on a client folder (client silo)' {
+        $c = New-TestConfig; $c.clients[0].access['Member'] = 'Read'
+        (Test-SagamoreConfig -Config $c -AllowPlaceholderClientId) -join "`n" | Should -Match "clients\['Meridian-Group'\].access: 'Member' .* breaks the client silo"
+    }
+    It 'rejects role groups on client subfolders and the client template' {
+        $c = New-TestConfig
+        $c.clients[0].folders[1].access['Support'] = 'Read'
+        $c.clientTemplate.access['Member'] = 'Edit'
+        $errs = (Test-SagamoreConfig -Config $c -AllowPlaceholderClientId) -join "`n"
+        $errs | Should -Match "Deliverables'\].access: 'Support'"
+        $errs | Should -Match "clientTemplate.access: 'Member'"
+    }
+    It 'still allows role groups outside Clients' {
+        $c = New-TestConfig; $c.folders[0].access['Member'] = 'Read'
+        Test-SagamoreConfig -Config $c -AllowPlaceholderClientId | Should -BeNullOrEmpty
+    }
     It 'reports missing sections instead of throwing' {
         Test-SagamoreConfig -Config @{ tenant = @{} } -AllowPlaceholderClientId | Should -Contain "Missing required section 'site'."
     }
@@ -72,7 +88,9 @@ Describe 'Folder plan' {
     }
     It 'uses per-client access when given, template otherwise' {
         ($Plan | Where-Object Path -eq 'Clients/Meridian-Group').Access.Keys | Should -Contain 'jacquelin@sagamorealliance.com'
-        ($Plan | Where-Object Path -eq 'Clients/Hartwell-Inc').Access.Member | Should -Be 'Edit'
+        $c = New-TestConfig; $c.clients[1].Remove('access')
+        $p = Get-SagamoreFolderPlan -Config $c | Where-Object Path -eq 'Clients/Hartwell-Inc'
+        @($p.Access.Keys) | Should -Be @('Owner')
     }
     It 'leaves folders without access to inherit' {
         ($Plan | Where-Object Path -eq 'Clients/Meridian-Group/_ClientShared').Access | Should -BeNullOrEmpty
@@ -113,6 +131,25 @@ Describe 'Names' {
         $ch.Channel | Should -Contain 'Meridian-Group'
         ($ch | Where-Object Channel -eq 'Meridian-Group').Folder | Should -Be 'Clients/Meridian-Group'
     }
+    It 'makes every client channel private and extra channels standard' {
+        $ch = Get-SagamoreChannelPlan -Config (New-TestConfig)
+        ($ch | Where-Object Channel -eq 'Internal').Type | Should -Be 'Standard'
+        @($ch | Where-Object Folder | ForEach-Object Type | Select-Object -Unique) | Should -Be @('Private')
+    }
+    It 'invites exactly the people named on the client folder, with Owners as channel owners' {
+        $m = Get-SagamoreChannelPlan -Config (New-TestConfig) | Where-Object Channel -eq 'Meridian-Group'
+        $m.Owners  | Should -Be @('joe@sagamorealliance.com')
+        $m.Members | Should -Be @('jacquelin@sagamorealliance.com', 'support1@sagamorealliance.com')
+        # Laci only has Add Only on a Meridian subfolder: she is not invited to the channel
+        $m.Members | Should -Not -Contain 'laci@sagamorealliance.com'
+    }
+    It 'invites nobody to a client with no access list or discovered on the site' {
+        $c = New-TestConfig; $c.clients[1].Remove('access')
+        $ch = Get-SagamoreChannelPlan -Config $c -ExtraClients 'Blue-Ridge'
+        @(($ch | Where-Object Channel -eq 'Hartwell-Inc').Members).Count | Should -Be 0
+        $b = $ch | Where-Object Channel -eq 'Blue-Ridge'
+        $b.Type | Should -Be 'Private'; @($b.Members).Count | Should -Be 0
+    }
     It 'plans no channels when Teams is disabled' {
         $c = New-TestConfig; $c.teams.enabled = $false
         Get-SagamoreChannelPlan -Config $c | Should -BeNullOrEmpty
@@ -137,6 +174,15 @@ Describe 'Principals and access comparison' {
         ($d | Where-Object Issue -eq 'WrongRole').Login  | Should -Be 'a'
         ($d | Where-Object Issue -eq 'Missing').Login    | Should -Be 'b'
         ($d | Where-Object Issue -eq 'Unexpected').Login | Should -Be 'c'
+    }
+    It 'finds channel members to invite, re-role and remove, but keeps installer admins' {
+        $desired = @{ joe = 'owner'; jac = 'member'; laci = 'member' }
+        $actual  = @{ joe = @{ Role = 'owner' }; jac = @{ Role = 'owner' }; sup2 = @{ Role = 'member' }; admin = @{ Role = 'owner' } }
+        $d = Compare-SagamoreChannelMembers -Desired $desired -Actual $actual -KeepIds 'admin'
+        ($d | Where-Object Issue -eq 'Missing').UserId    | Should -Be 'laci'
+        ($d | Where-Object Issue -eq 'WrongRole').UserId  | Should -Be 'jac'
+        ($d | Where-Object Issue -eq 'Unexpected').UserId | Should -Be 'sup2'
+        @($d).Count | Should -Be 3
     }
     It 'reports nothing when access matches' {
         Compare-SagamoreAccess -Desired @{ a = 'Read' } -Actual @{ a = @{ Roles = @('Read') } } | Should -BeNullOrEmpty

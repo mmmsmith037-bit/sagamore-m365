@@ -59,6 +59,8 @@ a{color:var(--link)}
 .person:hover{background:var(--surface2)}
 .person.sel{border-color:var(--accent2);background:var(--surface2)}
 .person .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chan{font-size:11px;padding:1px 7px;border-radius:99px;background:var(--surface2);color:var(--text2);white-space:nowrap}
+.chan.in{background:var(--b-ed-bg);color:var(--b-ed)} .chan.out{background:var(--b-no-bg);color:var(--b-no)}
 .role{font-size:11px;padding:1px 8px;border-radius:99px;background:var(--surface2);color:var(--text2)}
 .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;min-width:74px;text-align:center;white-space:nowrap}
 .r-fc{background:var(--b-fc-bg);color:var(--b-fc)} .r-ed{background:var(--b-ed-bg);color:var(--b-ed)}
@@ -299,15 +301,28 @@ function renderPeople(){
 }
 function renderClients(){
   const box=$('clients'); box.replaceChildren();
+  const chans=P.channelPlan(cfg);
+  const person=selPerson?people().find(p=>p.upn===selPerson):null;
   (cfg.clients||[]).forEach(c=>{
-    box.append(el('div',{class:'row',style:'justify-content:space-between;margin:3px 0'},
-      el('a',{href:'#',text:c.name,onclick:(e)=>{e.preventDefault();selPath='Clients/'+c.name;collapsed.delete('Clients');render();}}),
+    const ch=chans.find(x=>x.Folder&&x.Folder.toLowerCase()===('Clients/'+c.name).toLowerCase());
+    let info=null;
+    if(ch&&person){
+      const u=person.upn.toLowerCase();
+      const inIt=ch.Owners.includes(u)||ch.Members.includes(u);
+      info=el('span',{class:'chan '+(inIt?'in':'out'),title:'Private Teams channel',text:inIt?'in channel':'not invited'});
+    } else if(ch){
+      info=el('span',{class:'chan',title:'People invited to the private Teams channel',text:`${ch.Members.length} invited`});
+    }
+    box.append(el('div',{class:'row',style:'justify-content:space-between;margin:3px 0;gap:6px'},
+      el('a',{href:'#',style:'flex:1',text:c.name,onclick:(e)=>{e.preventDefault();selPath='Clients/'+c.name;collapsed.delete('Clients');render();}}),
+      info,
       el('button',{class:'x',title:'Remove client from config',onclick:()=>{
         if(!confirm(`Remove ${c.name} from the config?\n\nThis does NOT delete anything in SharePoint; the installer just stops managing it.`))return;
         cfg.clients=cfg.clients.filter(x=>x!==c); if(selPath&&selPath.toLowerCase().startsWith(('Clients/'+c.name).toLowerCase())) selPath=null; setDirty(true);
       }},'×')));
   });
   if(!(cfg.clients||[]).length) box.append('No clients yet.');
+  else box.append(el('p',{class:'mini',style:'margin-top:8px',text:'Each client is a silo: only people invited on the client folder can open it or see its private Teams channel.'}));
 }
 
 function renderTree(){
@@ -343,8 +358,8 @@ function renderTree(){
   walk('',1);
 }
 
-function principalOptions(exclude){
-  const opts=['Member','Support'].map(k=>({v:k,l:`All ${k}s`}));
+function principalOptions(exclude, siloed){
+  const opts=siloed?[]:['Member','Support'].map(k=>({v:k,l:`All ${k}s`}));
   people().forEach(p=>{ if(p.role!=='Owner') opts.push({v:p.upn,l:`${p.displayName||p.upn} (${p.role})`}); });
   return opts.filter(o=>!exclude.map(x=>x.toLowerCase()).includes(o.v.toLowerCase()));
 }
@@ -361,12 +376,12 @@ function accessEditor(access, onChange, opts){
       (isOwner||opts.readOnly)?el('span',{style:'width:24px'}):el('button',{class:'x',title:'Remove',onclick:()=>{const a={...access};delete a[k];onChange(a);}},'×')));
   });
   if(!opts.readOnly){
-    const avail=principalOptions(Object.keys(access));
+    const avail=principalOptions(Object.keys(access), opts.siloed);
     if(avail.length){
       const who=el('select',{},avail.map(o=>el('option',{value:o.v},o.l)));
       const role=el('select',{style:'width:110px'},P.VALID_ROLES.filter(r=>r!=='Full Control').map(r=>el('option',{value:r,selected:r==='Read'},r)));
       box.append(el('div',{class:'acc-row',style:'margin-top:10px'},who,role,
-        el('button',{class:'btn',style:'padding:4px 10px',onclick:()=>{const a={...access};a[who.value]=role.value;onChange(a);}},'Add')));
+        el('button',{class:'btn',style:'padding:4px 10px',onclick:()=>{const a={...access};a[who.value]=role.value;onChange(a);}},opts.siloed?'Invite':'Add')));
     }
   }
   return box;
@@ -391,17 +406,19 @@ function renderEditor(){
       accessEditor(p.Access||{Owner:'Full Control'},()=>{}, {readOnly:true}));
   } else {
     const isClientRoot=s.kind==='clientRoot';
+    const siloed=isClientRoot||s.kind==='client';
     const unique=!!p.Access;
     if(!isClientRoot){
       box.append(el('div',{class:'seg'},
         el('button',{class:unique?'':'on',onclick:()=>{if(unique)setAccess(p.Path,null);}},'Same as parent folder'),
         el('button',{class:unique?'on':'',onclick:()=>{if(!unique){const parentEff=inheritedAccess(p.Path);setAccess(p.Path,P.resolveAccess(parentEff));}}},'Custom access')));
     } else {
-      box.append(el('div',{class:'note',text:'Client folders always have their own access. Remove someone here and they cannot see this client at all.'}));
+      const ch=P.channelPlan(cfg).find(x=>x.Folder&&x.Folder.toLowerCase()===p.Path.toLowerCase());
+      box.append(el('div',{class:'note',text:'Client silo. Only the people invited here can open this client. They are also the members of the private Teams channel'+(ch?` "${ch.Channel}"`:'')+'. Remove someone and they lose both the folder and the channel.'}));
     }
     if(unique){
-      box.append(accessEditor(p.Access,(a)=>setAccess(p.Path,P.resolveAccess(a))));
-      if(isClientRoot && s.client.access) box.append(el('button',{class:'btn',style:'margin-top:8px',onclick:()=>{setAccess(p.Path,null);}},'Reset to client template'));
+      box.append(accessEditor(p.Access,(a)=>setAccess(p.Path,P.resolveAccess(a)),{siloed}));
+      if(isClientRoot && s.client.access) box.append(el('button',{class:'btn',style:'margin-top:8px',onclick:()=>{if(confirm('Remove everyone invited to this client? Only Owners will keep access.'))setAccess(p.Path,null);}},'Uninvite everyone'));
     } else {
       const from=inheritedFrom(p.Path);
       box.append(el('div',{class:'note',text:`Uses the access of ${from}.`}), accessEditor(inheritedAccess(p.Path),()=>{}, {readOnly:true}));
@@ -453,7 +470,8 @@ $('btn-add-client').onclick=()=>{
   const raw=prompt('Client name'); if(!raw)return;
   let n; try{n=P.folderName(raw);}catch(e){toast(e.message);return;}
   if((cfg.clients||[]).some(c=>c.name.toLowerCase()===n.toLowerCase())){toast('Client already exists.');return;}
-  (cfg.clients=cfg.clients||[]).push({name:n,folders:[]}); selPath='Clients/'+n; collapsed.delete('Clients'); setDirty(true);
+  (cfg.clients=cfg.clients||[]).push({name:n,access:{Owner:'Full Control'},folders:[]}); selPath='Clients/'+n; collapsed.delete('Clients'); setDirty(true);
+  toast('Created as Owners-only. Invite people in the folder panel.');
 };
 })();
 </script>

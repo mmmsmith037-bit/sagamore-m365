@@ -1,6 +1,6 @@
 /*
  * Sagamore plan logic -- JavaScript port of src/Sagamore.Common.psm1 (Get-SagamoreFolderPlan,
- * Test-SagamoreConfig, ConvertTo-SagamoreFolderName). tests/Plan.Parity.Tests.ps1 runs both
+ * Get-SagamoreChannelPlan, Test-SagamoreConfig, ConvertTo-SagamoreFolderName). tests/Plan.Parity.Tests.ps1 runs both
  * implementations against the same configs and fails if they ever disagree.
  */
 (function (root) {
@@ -13,6 +13,7 @@
   const INVALID_PATH = /["*:<>?\\|#%]/;
   const INVALID_PATH_G = /["*:<>?\\|#%]/g;
   const UPN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  const INVALID_CHANNEL_G = /[~#%&*{}+/\\:<>?|'"]/g;
 
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const get = (o, k, d) => (isObj(o) && o[k] !== undefined && o[k] !== null ? o[k] : d);
@@ -28,6 +29,40 @@
     if (!n) throw new Error(`Name '${name}' has no usable characters for a SharePoint folder.`);
     if (n.length > 100) n = n.substring(0, 100).replace(/[-.]+$/, '');
     return n;
+  }
+
+  function channelName(name) {
+    let n = String(name).replace(INVALID_CHANNEL_G, '').trim().replace(/\.+$/, '');
+    if (n.length > 50) n = n.substring(0, 50).trim();
+    if (!n) throw new Error(`Name '${name}' has no usable characters for a Teams channel.`);
+    return n;
+  }
+
+  /* Client channels are always private (client silo); members = people invited by name on the client folder. */
+  function channelPlan(cfg, extraClients) {
+    extraClients = extraClients || [];
+    const teams = get(cfg, 'teams', {});
+    if (get(teams, 'enabled', true) === false) return [];
+    const owners = arr(cfg.people).filter((p) => p.role === 'Owner').map((p) => p.upn.toLowerCase());
+    const out = [];
+    arr(get(teams, 'extraChannels', [])).forEach((x) => out.push({ Channel: channelName(x), Folder: null, Type: 'Standard', Owners: [], Members: [] }));
+    if (get(teams, 'channelPerClient', true) !== false) {
+      const byName = {};
+      arr(cfg.clients).forEach((c) => { if (c.name) byName[c.name.toLowerCase()] = c; });
+      const all = [];
+      arr(cfg.clients).map((c) => c.name).concat(extraClients).forEach((n) => { if (n && !all.includes(n)) all.push(n); });
+      const tplAccess = get(cfg.clientTemplate, 'access', null);
+      all.forEach((name) => {
+        const client = byName[name.toLowerCase()];
+        const access = client ? get(client, 'access', tplAccess) : tplAccess;
+        const invited = isObj(access)
+          ? [...new Set(Object.keys(access).filter((k) => k.includes('@')).map((k) => k.toLowerCase()).filter((k) => !owners.includes(k)))].sort()
+          : [];
+        out.push({ Channel: channelName(name), Folder: `Clients/${name}`, Type: 'Private', Owners: owners, Members: invited });
+      });
+    }
+    const seen = new Set();
+    return out.filter((c) => { const k = c.Channel.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   }
 
   function resolveAccess(access) {
@@ -138,6 +173,13 @@
       });
     };
 
+    const checkSilo = (access, where) => {
+      if (!isObj(access)) return;
+      Object.keys(access).forEach((principal) => {
+        if (principal === 'Member' || principal === 'Support') errs.push(`${where}.access: '${principal}' would give every ${principal} access and breaks the client silo. Invite people by name instead.`);
+      });
+    };
+
     checkAccess(cfg.libraryAccess, 'libraryAccess');
     if (!get(cfg.libraryAccess, 'Owner', null)) errs.push('libraryAccess must grant Owner access.');
 
@@ -152,7 +194,11 @@
     });
 
     checkAccess(get(cfg.clientTemplate, 'access', null), 'clientTemplate');
-    arr(get(cfg.clientTemplate, 'subfolders', [])).forEach((s) => checkAccess(get(s, 'access', null), `clientTemplate.subfolders['${s.path}']`));
+    checkSilo(get(cfg.clientTemplate, 'access', null), 'clientTemplate');
+    arr(get(cfg.clientTemplate, 'subfolders', [])).forEach((s) => {
+      checkAccess(get(s, 'access', null), `clientTemplate.subfolders['${s.path}']`);
+      checkSilo(get(s, 'access', null), `clientTemplate.subfolders['${s.path}']`);
+    });
 
     const names = {};
     arr(cfg.clients).forEach((c) => {
@@ -162,11 +208,13 @@
       if (names[name.toLowerCase()]) errs.push(`clients: '${name}' is listed twice.`);
       names[name.toLowerCase()] = true;
       checkAccess(get(c, 'access', null), `clients['${name}']`);
+      checkSilo(get(c, 'access', null), `clients['${name}']`);
       arr(get(c, 'folders', [])).forEach((cf) => {
         const cp = normPath(get(cf, 'path', ''));
         if (!cp) errs.push(`clients['${name}'].folders: an entry has an empty path.`);
         else if (INVALID_PATH.test(cp)) errs.push(`clients['${name}'].folders: '${cp}' contains a character SharePoint does not allow.`);
         checkAccess(get(cf, 'access', null), `clients['${name}'].folders['${cp}']`);
+        checkSilo(get(cf, 'access', null), `clients['${name}'].folders['${cp}']`);
       });
     });
     return errs;
@@ -194,7 +242,7 @@
     return { role: roles[0], from };
   }
 
-  const api = { VALID_ROLES, ROLE_RANK, GROUP_KEYS, normPath, folderName, resolveAccess, folderPlan, validate, effectiveAccess };
+  const api = { VALID_ROLES, ROLE_RANK, GROUP_KEYS, normPath, folderName, channelName, channelPlan, resolveAccess, folderPlan, validate, effectiveAccess };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SagamorePlan = api;
 })(typeof self !== 'undefined' ? self : this);

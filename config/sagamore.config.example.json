@@ -44,7 +44,7 @@
     { "path": "_Templates/General" }
   ],
   "clientTemplate": {
-    "access": { "Owner": "Full Control", "Member": "Edit", "Support": "Read" },
+    "access": { "Owner": "Full Control" },
     "subfolders": [
       { "path": "Invoices", "access": { "Owner": "Full Control" } },
       { "path": "_ClientShared" }
@@ -62,6 +62,7 @@
     },
     {
       "name": "Hartwell-Inc",
+      "access": { "Owner": "Full Control", "laci@sagamorealliance.com": "Edit", "support2@sagamorealliance.com": "Read" },
       "folders": [ { "path": "Project-Q3Audit" } ]
     }
   ],
