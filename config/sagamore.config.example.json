@@ -1,0 +1,74 @@
+{
+  "$schemaVersion": 1,
+  "tenant": {
+    "name": "sagamorealliance",
+    "clientId": "00000000-0000-0000-0000-000000000000"
+  },
+  "site": {
+    "title": "Sagamore Alliance",
+    "alias": "SagamoreAlliance",
+    "library": "Shared Documents",
+    "externalSharing": "ExistingExternalUserSharingOnly",
+    "versionLimit": 50,
+    "adminUpns": [ "marshall@sagamorealliance.com" ]
+  },
+  "groups": {
+    "Owner": "Sagamore-Owner",
+    "Member": "Sagamore-Member",
+    "Support": "Sagamore-Support"
+  },
+  "people": [
+    { "upn": "joe@sagamorealliance.com",       "displayName": "Joe Sagamore",     "role": "Owner"   },
+    { "upn": "jacquelin@sagamorealliance.com", "displayName": "Jacquelin Torres", "role": "Member"  },
+    { "upn": "laci@sagamorealliance.com",      "displayName": "Laci Brennan",     "role": "Member"  },
+    { "upn": "support1@sagamorealliance.com",  "displayName": "Support 1",        "role": "Support" },
+    { "upn": "support2@sagamorealliance.com",  "displayName": "Support 2",        "role": "Support" }
+  ],
+  "libraryAccess": {
+    "Owner": "Full Control",
+    "Member": "Edit",
+    "Support": "Read"
+  },
+  "folders": [
+    { "path": "_Admin", "access": { "Owner": "Full Control" } },
+    { "path": "_Admin/Permissions-Log" },
+    { "path": "_Admin/Site-Config" },
+    { "path": "_Admin/Naming-Review" },
+    { "path": "Clients", "access": { "Owner": "Full Control", "Member": "Read", "Support": "Read" } },
+    { "path": "Internal", "access": { "Owner": "Full Control", "Member": "Edit", "Support": "Read" } },
+    { "path": "Internal/Operations" },
+    { "path": "Internal/HR", "access": { "Owner": "Full Control", "Member": "Edit" } },
+    { "path": "_Templates", "access": { "Owner": "Full Control", "Member": "Read", "Support": "Read" } },
+    { "path": "_Templates/Contracts" },
+    { "path": "_Templates/SOW" },
+    { "path": "_Templates/General" }
+  ],
+  "clientTemplate": {
+    "access": { "Owner": "Full Control", "Member": "Edit", "Support": "Read" },
+    "subfolders": [
+      { "path": "Invoices", "access": { "Owner": "Full Control" } },
+      { "path": "_ClientShared" }
+    ],
+    "lockedFolderNames": [ "Invoices" ]
+  },
+  "clients": [
+    {
+      "name": "Meridian-Group",
+      "access": { "Owner": "Full Control", "jacquelin@sagamorealliance.com": "Edit", "support1@sagamorealliance.com": "Read" },
+      "folders": [
+        { "path": "Project-BrandRefresh" },
+        { "path": "Project-BrandRefresh/Deliverables", "access": { "Owner": "Full Control", "jacquelin@sagamorealliance.com": "Edit", "laci@sagamorealliance.com": "Add Only", "support1@sagamorealliance.com": "Read" } }
+      ]
+    },
+    {
+      "name": "Hartwell-Inc",
+      "folders": [ { "path": "Project-Q3Audit" } ]
+    }
+  ],
+  "teams": {
+    "enabled": true,
+    "channelPerClient": true,
+    "extraChannels": [ "Internal" ],
+    "supportAsTeamMembers": true
+  }
+}

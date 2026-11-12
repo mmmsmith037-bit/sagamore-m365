@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sagamore Permission Manager</title>
+<style>
+:root{
+  --bg:#0D0F14;--surface:#161820;--surface2:#1E2130;--border:#252836;--border2:#2E3347;
+  --text:#E8EAF2;--text2:#8B90A7;--text3:#5D6280;--accent:#1D9E75;--accent2:#6C5CE7;--red:#E5534B;--amber:#E8920A;
+  --radius:8px;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:'Cascadia Code','Consolas',monospace;
+  --b-fc-bg:#26215C;--b-fc:#C4BEFF;--b-ed-bg:#0A3428;--b-ed:#5EDAB8;--b-co-bg:#0A1E3A;--b-co:#7DB8F0;
+  --b-ao-bg:#3D2200;--b-ao:#FFB347;--b-rd-bg:#1E2130;--b-rd:#A5AAC0;--b-no-bg:#12131A;--b-no:#5D6280;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#F5F6FA;--surface:#FFFFFF;--surface2:#EEF0F6;--border:#DDE0EA;--border2:#C9CDDB;
+    --text:#1A1C24;--text2:#555A72;--text3:#8B90A7;
+    --b-fc-bg:#E6E3FF;--b-fc:#3B2FB0;--b-ed-bg:#DDF5EC;--b-ed:#0B6B4C;--b-co-bg:#DEEBFA;--b-co:#1B5B9E;
+    --b-ao-bg:#FFEBD0;--b-ao:#8A4B00;--b-rd-bg:#ECEEF4;--b-rd:#4A4F66;--b-no-bg:#F1F2F6;--b-no:#9094A8;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#F5F6FA;--surface:#FFFFFF;--surface2:#EEF0F6;--border:#DDE0EA;--border2:#C9CDDB;
+  --text:#1A1C24;--text2:#555A72;--text3:#8B90A7;
+  --b-fc-bg:#E6E3FF;--b-fc:#3B2FB0;--b-ed-bg:#DDF5EC;--b-ed:#0B6B4C;--b-co-bg:#DEEBFA;--b-co:#1B5B9E;
+  --b-ao-bg:#FFEBD0;--b-ao:#8A4B00;--b-rd-bg:#ECEEF4;--b-rd:#4A4F66;--b-no-bg:#F1F2F6;--b-no:#9094A8;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5}
+button,select,input{font-family:inherit;font-size:13px;color:inherit}
+button{cursor:pointer}
+a{color:var(--link)}
+:root{--link:#9D93F5}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--link:#4B3FC0}}
+:root[data-theme="light"]{--link:#4B3FC0}
+.hdr{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:20}
+.logo{width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.hdr h1{font-size:15px;font-weight:600}
+.hdr h1 span{color:var(--text2);font-weight:400;margin-left:6px;font-size:13px}
+.spacer{flex:1}
+.btn{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:6px 12px}
+.btn:hover{border-color:var(--text3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{color:var(--red)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.pill{padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid transparent}
+.pill.ok{background:#1D9E7522;color:var(--accent);border-color:#1D9E7544}
+.pill.bad{background:#E5534B22;color:var(--red);border-color:#E5534B44}
+.pill.dirty{background:#E8920A22;color:var(--amber);border-color:#E8920A44}
+.wrap{display:grid;grid-template-columns:280px 1fr 360px;gap:16px;padding:16px 20px;max-width:1500px;margin:0 auto}
+@media (max-width:1100px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.card+.card{margin-top:14px}
+.card h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text2);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.card h2 .spacer{flex:1}
+.mini{font-size:12px;color:var(--text2)}
+.person{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:6px;padding:6px 8px}
+.person:hover{background:var(--surface2)}
+.person.sel{border-color:var(--accent2);background:var(--surface2)}
+.person .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.role{font-size:11px;padding:1px 8px;border-radius:99px;background:var(--surface2);color:var(--text2)}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;min-width:74px;text-align:center;white-space:nowrap}
+.r-fc{background:var(--b-fc-bg);color:var(--b-fc)} .r-ed{background:var(--b-ed-bg);color:var(--b-ed)}
+.r-co{background:var(--b-co-bg);color:var(--b-co)} .r-ao{background:var(--b-ao-bg);color:var(--b-ao)}
+.r-rd{background:var(--b-rd-bg);color:var(--b-rd)} .r-no{background:var(--b-no-bg);color:var(--b-no)}
+.legend div{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px;color:var(--text2)}
+.tree-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;border:1px solid transparent;cursor:pointer}
+.tree-row:hover{background:var(--surface2)}
+.tree-row.sel{border-color:var(--accent2);background:var(--surface2)}
+.tree-row .ind{display:inline-block;flex-shrink:0}
+.tree-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .tag{font-size:10px;color:var(--text3);border:1px solid var(--border2);border-radius:4px;padding:0 5px}
+.tree-row .tag.u{color:var(--accent2);border-color:var(--accent2)}
+.tree-row .tag.l{color:var(--red);border-color:var(--red)}
+.tree-row.dim .nm{color:var(--text3)}
+.chev{width:16px;text-align:center;color:var(--text3);user-select:none}
+.empty{color:var(--text3);font-size:13px;padding:30px 10px;text-align:center}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.field label{font-size:12px;color:var(--text2)}
+input[type=text],select{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:6px 8px;width:100%}
+.acc-row{display:flex;align-items:center;gap:8px;margin:6px 0}
+.acc-row .who{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acc-row select{width:140px}
+.x{background:none;border:none;color:var(--text3);font-size:16px;padding:0 4px}
+.x:hover{color:var(--red)}
+.seg{display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden;margin-bottom:10px}
+.seg button{flex:1;background:none;border:none;padding:6px}
+.seg button.on{background:var(--accent2);color:#fff}
+.note{font-size:12px;color:var(--text2);background:var(--surface2);border-radius:6px;padding:8px 10px;margin:8px 0}
+.note.warn{color:var(--amber)}
+.problems{font-size:12px;color:var(--red);max-height:180px;overflow:auto}
+.problems li{margin-left:16px}
+pre.cmd{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;margin:6px 0}
+.steps li{margin:0 0 10px 18px;font-size:13px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.drop{border:2px dashed var(--border2);border-radius:var(--radius);padding:50px 20px;text-align:center;color:var(--text2);max-width:640px;margin:60px auto}
+.drop.over{border-color:var(--accent)}
+.drop h2{color:var(--text);font-size:18px;margin-bottom:6px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);padding:8px 16px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<header class="hdr">
+  <div class="logo">S</div>
+  <h1>Sagamore Alliance <span>Permission Manager</span></h1>
+  <span id="status" class="pill hidden"></span>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-open">Open config…</button>
+  <button class="btn primary" id="btn-save" disabled>Save config</button>
+  <button class="btn" id="btn-theme" title="Toggle light/dark">◐</button>
+  <input type="file" id="file-in" accept=".json,application/json" class="hidden">
+</header>
+
+<section id="landing" class="drop">
+  <h2>Open your Sagamore config</h2>
+  <p>Drop <code>config/sagamore.config.json</code> here, or click <b>Open config…</b>.</p>
+  <p class="mini" style="margin-top:10px">Everything stays on this computer. Changes are applied to SharePoint by running the installer — this page never signs in to Microsoft 365.</p>
+</section>
+
+<main id="app" class="wrap hidden">
+  <div>
+    <div class="card">
+      <h2>People <span class="spacer"></span><button class="btn" id="btn-add-person" style="padding:2px 8px">+ Add</button></h2>
+      <div id="people"></div>
+      <p class="mini" style="margin-top:8px">Pick a person to see what they can open in every folder.</p>
+    </div>
+    <div class="card">
+      <h2>Clients <span class="spacer"></span><button class="btn" id="btn-add-client" style="padding:2px 8px">+ Add</button></h2>
+      <div id="clients" class="mini"></div>
+    </div>
+    <div class="card legend">
+      <h2>Access levels</h2>
+      <div><span class="badge r-fc">Full Control</span>Everything, incl. permissions</div>
+      <div><span class="badge r-ed">Edit</span>Add, edit, delete, manage lists</div>
+      <div><span class="badge r-co">Contribute</span>Add, edit, delete files</div>
+      <div><span class="badge r-ao">Add Only</span>Add and edit, cannot delete</div>
+      <div><span class="badge r-rd">Read</span>View and download</div>
+      <div><span class="badge r-no">No access</span>Folder is invisible</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span id="tree-title">Folders</span><span class="spacer"></span><span class="mini" id="tree-hint" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div id="tree"></div>
+  </div>
+
+  <div>
+    <div class="card" id="editor"><div class="empty">Select a folder to edit who can access it.</div></div>
+    <div class="card">
+      <h2>Apply changes</h2>
+      <div id="problems"></div>
+      <ol class="steps">
+        <li><b>Save config</b> over <code>config/sagamore.config.json</code> in the sagamore-m365 folder.</li>
+        <li>Preview what will change:<pre class="cmd" id="cmd-whatif"></pre></li>
+        <li>Apply it:<pre class="cmd" id="cmd-apply"></pre></li>
+        <li>Confirm SharePoint matches:<pre class="cmd" id="cmd-audit"></pre></li>
+      </ol>
+      <div class="row"><button class="btn" id="btn-copy">Copy apply command</button></div>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="plan.js"></script>
+<script>
+(function(){
+'use strict';
+const P = window.SagamorePlan;
+const $ = (id) => document.getElementById(id);
+const ROLE_CLS = {'Full Control':'r-fc','Edit':'r-ed','Contribute':'r-co','Add Only':'r-ao','Read':'r-rd'};
+let cfg = null, fileHandle = null, fileName = 'sagamore.config.json', dirty = false;
+let selPerson = null, selPath = null, collapsed = new Set();
+const CMD = {
+  whatif: './scripts/Install-Sagamore.ps1 -PermissionsOnly -WhatIf',
+  apply:  './scripts/Install-Sagamore.ps1 -PermissionsOnly',
+  audit:  './scripts/Test-SagamoreInstall.ps1'
+};
+$('cmd-whatif').textContent = CMD.whatif; $('cmd-apply').textContent = CMD.apply; $('cmd-audit').textContent = CMD.audit;
+
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600);}
+function el(tag, props, ...kids){const e=document.createElement(tag);if(props)Object.entries(props).forEach(([k,v])=>{if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(v!==undefined&&v!==null&&v!==false)e.setAttribute(k,v===true?'':v);});kids.flat().forEach(k=>{if(k!==null&&k!==undefined)e.append(k.nodeType?k:document.createTextNode(String(k)));});return e;}
+function badge(role){return el('span',{class:'badge '+(role?ROLE_CLS[role]:'r-no'),text:role||'No access'});}
+function setDirty(v){dirty=v;render();}
+function people(){return cfg.people||[];}
+function displayFor(key){if(['Owner','Member','Support'].includes(key))return `All ${key}s (${cfg.groups[key]})`;const p=people().find(x=>x.upn.toLowerCase()===key.toLowerCase());return p?`${p.displayName||p.upn}`:key;}
+
+/* ---------- theme ---------- */
+try{const t=localStorage.getItem('sag-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}
+$('btn-theme').onclick=()=>{const cur=document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');const n=cur==='light'?'dark':'light';document.documentElement.dataset.theme=n;try{localStorage.setItem('sag-theme',n);}catch(e){}};
+
+/* ---------- load / save ---------- */
+function loadText(text, name){
+  let parsed; try{parsed=JSON.parse(text);}catch(e){toast('That file is not valid JSON.');return;}
+  if(!parsed.people||!parsed.folders){toast('That does not look like a Sagamore config.');return;}
+  cfg=parsed; fileName=name||fileName; selPerson=null; selPath=null; dirty=false;
+  $('landing').classList.add('hidden'); $('app').classList.remove('hidden'); render();
+}
+$('btn-open').onclick=async()=>{
+  if(window.showOpenFilePicker){
+    try{const [h]=await showOpenFilePicker({types:[{description:'Sagamore config',accept:{'application/json':['.json']}}]});fileHandle=h;const f=await h.getFile();loadText(await f.text(),f.name);}catch(e){}
+  } else $('file-in').click();
+};
+$('file-in').onchange=async(e)=>{const f=e.target.files[0];if(f){fileHandle=null;loadText(await f.text(),f.name);}};
+const land=$('landing');
+['dragover','dragenter'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();land.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();land.classList.remove('over');}));
+document.addEventListener('drop',async e=>{const f=e.dataTransfer.files[0];if(f){fileHandle=null;loadText(await f.text(),f.name);}});
+$('btn-save').onclick=async()=>{
+  const text=JSON.stringify(cfg,null,2)+'\n';
+  try{
+    if(fileHandle&&fileHandle.createWritable){const w=await fileHandle.createWritable();await w.write(text);await w.close();toast('Saved to '+fileName);}
+    else{const a=el('a',{href:URL.createObjectURL(new Blob([text],{type:'application/json'})),download:'sagamore.config.json'});document.body.append(a);a.click();a.remove();toast('Downloaded — copy it over config/sagamore.config.json');}
+    dirty=false; render();
+  }catch(e){toast('Save failed: '+e.message);}
+};
+// Preview: open http://localhost:<port>/dashboard/#example (served over http) to load the example config.
+if(location.hash==='#example'&&location.protocol.startsWith('http')){
+  fetch('../config/sagamore.config.example.json').then(r=>r.text()).then(t=>loadText(t,'sagamore.config.example.json')).catch(()=>toast('Could not load the example config.'));
+}
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+$('btn-copy').onclick=()=>{navigator.clipboard.writeText(CMD.apply).then(()=>toast('Copied'),()=>toast('Copy failed — select the text instead'));};
+
+/* ---------- config source lookup: which config object controls a path ---------- */
+function sourceOf(path){
+  const lp=path.toLowerCase();
+  const f=(cfg.folders||[]).find(x=>P.normPath(x.path).toLowerCase()===lp);
+  if(f) return {kind:'folder',ref:f};
+  const m=/^Clients\/([^/]+)(?:\/(.+))?$/i.exec(path);
+  if(m){
+    const client=(cfg.clients||[]).find(c=>c.name.toLowerCase()===m[1].toLowerCase());
+    if(client){
+      if(!m[2]) return {kind:'clientRoot',client};
+      const rel=m[2];
+      const leaf=rel.split('/').pop().toLowerCase();
+      const locked=((cfg.clientTemplate||{}).lockedFolderNames||[]).map(s=>s.toLowerCase()).includes(leaf);
+      const cf=(client.folders||[]).find(x=>P.normPath(x.path).toLowerCase()===rel.toLowerCase());
+      const tpl=((cfg.clientTemplate||{}).subfolders||[]).find(s=>P.normPath(s.path).toLowerCase()===rel.toLowerCase());
+      return {kind:'client',client,rel,ref:cf||null,tpl:tpl||null,locked};
+    }
+  }
+  return {kind:'implied'};
+}
+function setAccess(path, access){
+  const s=sourceOf(path);
+  const val=access?JSON.parse(JSON.stringify(access)):null;
+  if(s.kind==='folder'){ if(val) s.ref.access=val; else delete s.ref.access; }
+  else if(s.kind==='clientRoot'){ if(val) s.client.access=val; else delete s.client.access; }
+  else if(s.kind==='client'){
+    if(!s.client.folders) s.client.folders=[];
+    if(s.ref){ if(val) s.ref.access=val; else delete s.ref.access; }
+    else if(val) s.client.folders.push({path:s.rel,access:val});
+  } else { (cfg.folders=cfg.folders||[]).push(val?{path,access:val}:{path}); }
+  setDirty(true);
+}
+function addFolder(parent, name){
+  let n; try{n=P.folderName(name);}catch(e){toast(e.message);return;}
+  const path=parent+'/'+n;
+  if(plan().some(p=>p.Path.toLowerCase()===path.toLowerCase())){toast('That folder already exists.');return;}
+  const m=/^Clients\/([^/]+)(?:\/(.*))?$/i.exec(path);
+  const client=m&&(cfg.clients||[]).find(c=>c.name.toLowerCase()===m[1].toLowerCase());
+  if(client){(client.folders=client.folders||[]).push({path:m[2]});}
+  else (cfg.folders=cfg.folders||[]).push({path});
+  collapsed.delete(parent); selPath=path; setDirty(true);
+}
+function removeFolder(path){
+  const lp=path.toLowerCase();
+  const under=(p)=>{p=P.normPath(p).toLowerCase();return p===lp||p.startsWith(lp+'/');};
+  cfg.folders=(cfg.folders||[]).filter(f=>!under(f.path));
+  (cfg.clients||[]).forEach(c=>{ if(c.folders) c.folders=c.folders.filter(f=>!under(`Clients/${c.name}/${P.normPath(f.path)}`)); });
+  selPath=null; setDirty(true);
+  toast('Removed from config. The folder is NOT deleted in SharePoint — the installer just stops managing it.');
+}
+
+/* ---------- render ---------- */
+let _plan=null;
+function plan(){return _plan;}
+function render(){
+  _plan=P.folderPlan(cfg);
+  const errs=P.validate(cfg,{allowPlaceholderClientId:true});
+  const st=$('status'); st.classList.remove('hidden','ok','bad','dirty');
+  if(errs.length){st.classList.add('bad');st.textContent=`${errs.length} problem${errs.length>1?'s':''}`;}
+  else if(dirty){st.classList.add('dirty');st.textContent='Unsaved changes';}
+  else {st.classList.add('ok');st.textContent='Config valid';}
+  $('btn-save').disabled=!dirty||errs.length>0;
+  $('problems').replaceChildren(errs.length?el('ul',{class:'problems'},errs.map(e=>el('li',{text:e}))):'');
+  renderPeople(); renderClients(); renderTree(); renderEditor();
+}
+
+function renderPeople(){
+  const box=$('people'); box.replaceChildren();
+  people().forEach(p=>{
+    const b=el('button',{class:'person'+(selPerson===p.upn?' sel':''),title:p.upn,onclick:()=>{selPerson=selPerson===p.upn?null:p.upn;render();}},
+      el('span',{class:'nm',text:p.displayName||p.upn}), el('span',{class:'role',text:p.role}));
+    box.append(b);
+  });
+}
+function renderClients(){
+  const box=$('clients'); box.replaceChildren();
+  (cfg.clients||[]).forEach(c=>{
+    box.append(el('div',{class:'row',style:'justify-content:space-between;margin:3px 0'},
+      el('a',{href:'#',text:c.name,onclick:(e)=>{e.preventDefault();selPath='Clients/'+c.name;collapsed.delete('Clients');render();}}),
+      el('button',{class:'x',title:'Remove client from config',onclick:()=>{
+        if(!confirm(`Remove ${c.name} from the config?\n\nThis does NOT delete anything in SharePoint; the installer just stops managing it.`))return;
+        cfg.clients=cfg.clients.filter(x=>x!==c); if(selPath&&selPath.toLowerCase().startsWith(('Clients/'+c.name).toLowerCase())) selPath=null; setDirty(true);
+      }},'×')));
+  });
+  if(!(cfg.clients||[]).length) box.append('No clients yet.');
+}
+
+function renderTree(){
+  const box=$('tree'); box.replaceChildren();
+  const pl=plan();
+  const person=selPerson?people().find(p=>p.upn===selPerson):null;
+  $('tree-title').textContent=person?`What ${person.displayName||person.upn} can access`:'Folders';
+  $('tree-hint').textContent=person?'Click a person again to clear':'Click a folder to edit';
+  const hasKids=(path)=>pl.some(p=>p.Path.toLowerCase().startsWith(path.toLowerCase()+'/'));
+  // depth-first ordering for display
+  const children=(parent)=>pl.filter(p=>{const i=p.Path.lastIndexOf('/');return (i<0?'':p.Path.substring(0,i)).toLowerCase()===parent.toLowerCase();}).sort((a,b)=>a.Path.localeCompare(b.Path));
+  const lib=el('div',{class:'tree-row'+(selPath==='(library)'?' sel':''),onclick:()=>{selPath='(library)';render();}},
+    el('span',{class:'chev',text:'▾'}), el('span',{class:'nm',text:'📚 '+(cfg.site.library||'Shared Documents')}),
+    el('span',{class:'tag u',text:'library'}),
+    person?badge(P.effectiveAccess(cfg,pl,'',person).role):null);
+  box.append(lib);
+  const walk=(parent,depth)=>{
+    children(parent).forEach(p=>{
+      const kids=hasKids(p.Path), open=!collapsed.has(p.Path);
+      const s=sourceOf(p.Path);
+      const locked=s.kind==='client'&&s.locked;
+      const eff=person?P.effectiveAccess(cfg,pl,p.Path,person):null;
+      const row=el('div',{class:'tree-row'+(selPath===p.Path?' sel':'')+(person&&!eff.role?' dim':''),onclick:()=>{selPath=p.Path;render();}},
+        el('span',{class:'ind',style:`width:${depth*18}px`}),
+        el('span',{class:'chev',text:kids?(open?'▾':'▸'):'',onclick:(e)=>{e.stopPropagation();if(!kids)return;open?collapsed.add(p.Path):collapsed.delete(p.Path);render();}}),
+        el('span',{class:'nm',text:(locked?'🔒 ':'📁 ')+p.Path.split('/').pop()}),
+        p.Access?el('span',{class:'tag '+(locked?'l':'u'),text:locked?'locked':'custom'}):null,
+        person?badge(eff.role):null);
+      box.append(row);
+      if(kids&&open) walk(p.Path,depth+1);
+    });
+  };
+  walk('',1);
+}
+
+function principalOptions(exclude){
+  const opts=['Member','Support'].map(k=>({v:k,l:`All ${k}s`}));
+  people().forEach(p=>{ if(p.role!=='Owner') opts.push({v:p.upn,l:`${p.displayName||p.upn} (${p.role})`}); });
+  return opts.filter(o=>!exclude.map(x=>x.toLowerCase()).includes(o.v.toLowerCase()));
+}
+
+function accessEditor(access, onChange, opts){
+  opts=opts||{};
+  const box=el('div');
+  Object.keys(access).forEach(k=>{
+    const isOwner=k==='Owner';
+    const sel=el('select',{disabled:isOwner||opts.readOnly,onchange:(e)=>{const a={...access};a[k]=e.target.value;onChange(a);}},
+      P.VALID_ROLES.map(r=>el('option',{value:r,selected:access[k]===r},r)));
+    box.append(el('div',{class:'acc-row'},
+      el('span',{class:'who',title:k,text:isOwner?`Owners (${cfg.groups.Owner})`:displayFor(k)}), sel,
+      (isOwner||opts.readOnly)?el('span',{style:'width:24px'}):el('button',{class:'x',title:'Remove',onclick:()=>{const a={...access};delete a[k];onChange(a);}},'×')));
+  });
+  if(!opts.readOnly){
+    const avail=principalOptions(Object.keys(access));
+    if(avail.length){
+      const who=el('select',{},avail.map(o=>el('option',{value:o.v},o.l)));
+      const role=el('select',{style:'width:110px'},P.VALID_ROLES.filter(r=>r!=='Full Control').map(r=>el('option',{value:r,selected:r==='Read'},r)));
+      box.append(el('div',{class:'acc-row',style:'margin-top:10px'},who,role,
+        el('button',{class:'btn',style:'padding:4px 10px',onclick:()=>{const a={...access};a[who.value]=role.value;onChange(a);}},'Add')));
+    }
+  }
+  return box;
+}
+
+function renderEditor(){
+  const box=$('editor'); box.replaceChildren();
+  if(!selPath){box.append(el('div',{class:'empty',text:'Select a folder to edit who can access it.'}));return;}
+  if(selPath==='(library)'){
+    box.append(el('h2',{text:'Library root'}),
+      el('div',{class:'note',text:'Default access for everything that does not have its own permissions. Every Team member can see the library, so keep Support at Read here.'}),
+      accessEditor(cfg.libraryAccess,(a)=>{cfg.libraryAccess=P.resolveAccess(a);setDirty(true);}));
+    return;
+  }
+  const p=plan().find(x=>x.Path===selPath); if(!p){selPath=null;renderEditor();return;}
+  const s=sourceOf(p.Path);
+  const locked=s.kind==='client'&&s.locked;
+  box.append(el('h2',{},el('span',{text:p.Path.split('/').pop()})), el('div',{class:'mini',style:'margin:-6px 0 10px;word-break:break-all',text:p.Path}));
+
+  if(locked){
+    box.append(el('div',{class:'note warn',text:'Locked folder: every folder with this name under Clients is forced to the client template access (normally Owners only). Change it in clientTemplate in the config file if you really need to.'}),
+      accessEditor(p.Access||{Owner:'Full Control'},()=>{}, {readOnly:true}));
+  } else {
+    const isClientRoot=s.kind==='clientRoot';
+    const unique=!!p.Access;
+    if(!isClientRoot){
+      box.append(el('div',{class:'seg'},
+        el('button',{class:unique?'':'on',onclick:()=>{if(unique)setAccess(p.Path,null);}},'Same as parent folder'),
+        el('button',{class:unique?'on':'',onclick:()=>{if(!unique){const parentEff=inheritedAccess(p.Path);setAccess(p.Path,P.resolveAccess(parentEff));}}},'Custom access')));
+    } else {
+      box.append(el('div',{class:'note',text:'Client folders always have their own access. Remove someone here and they cannot see this client at all.'}));
+    }
+    if(unique){
+      box.append(accessEditor(p.Access,(a)=>setAccess(p.Path,P.resolveAccess(a))));
+      if(isClientRoot && s.client.access) box.append(el('button',{class:'btn',style:'margin-top:8px',onclick:()=>{setAccess(p.Path,null);}},'Reset to client template'));
+    } else {
+      const from=inheritedFrom(p.Path);
+      box.append(el('div',{class:'note',text:`Uses the access of ${from}.`}), accessEditor(inheritedAccess(p.Path),()=>{}, {readOnly:true}));
+    }
+    // warn about people who can open this folder but not its parent
+    const warn=parentGapWarning(p.Path);
+    if(warn) box.append(el('div',{class:'note warn',text:warn}));
+  }
+
+  const add=el('input',{type:'text',placeholder:'New subfolder name'});
+  box.append(el('div',{class:'field',style:'margin-top:14px'},el('label',{text:'Add a subfolder'}),
+    el('div',{class:'row'},add,el('button',{class:'btn',onclick:()=>{if(add.value.trim())addFolder(p.Path,add.value.trim());}},'Add'))));
+  const removable=(s.kind==='folder')||(s.kind==='client'&&s.ref&&!s.tpl)||(s.kind==='implied');
+  if(removable) box.append(el('button',{class:'btn danger',onclick:()=>{if(confirm(`Stop managing ${p.Path} (and its subfolders) in the config?`))removeFolder(p.Path);}},'Remove from config'));
+}
+function inheritedFrom(path){
+  const pl=plan(); let cur=path;
+  while(cur.includes('/')){cur=cur.substring(0,cur.lastIndexOf('/'));const e=pl.find(x=>x.Path.toLowerCase()===cur.toLowerCase());if(e&&e.Access)return cur;}
+  return 'the library root';
+}
+function inheritedAccess(path){
+  const pl=plan(); let cur=path;
+  while(cur.includes('/')){cur=cur.substring(0,cur.lastIndexOf('/'));const e=pl.find(x=>x.Path.toLowerCase()===cur.toLowerCase());if(e&&e.Access)return e.Access;}
+  return cfg.libraryAccess;
+}
+function parentGapWarning(path){
+  if(!path.includes('/'))return null;
+  const parent=path.substring(0,path.lastIndexOf('/'));
+  const pl=plan();
+  const names=people().filter(p=>P.effectiveAccess(cfg,pl,path,p).role&&!P.effectiveAccess(cfg,pl,parent,p).role).map(p=>p.displayName||p.upn);
+  return names.length?`${names.join(', ')} can open this folder but not its parent, so they will only reach it from a direct link or "Shared with me", not by browsing.`:null;
+}
+
+/* ---------- add person / client ---------- */
+$('btn-add-person').onclick=()=>{
+  const upn=prompt('Work email (UPN) of the person, e.g. jane@sagamorealliance.com');
+  if(!upn)return;
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(upn)){toast('That is not a valid email/UPN.');return;}
+  if(people().some(p=>p.upn.toLowerCase()===upn.toLowerCase())){toast('Already listed.');return;}
+  const name=prompt('Display name',upn.split('@')[0])||upn;
+  const role=(prompt('Role: Owner, Member or Support','Member')||'').trim();
+  const r=['Owner','Member','Support'].find(x=>x.toLowerCase()===role.toLowerCase());
+  if(!r){toast('Role must be Owner, Member or Support.');return;}
+  cfg.people.push({upn,displayName:name,role:r}); setDirty(true);
+  toast('Added. A full install (not -PermissionsOnly) adds them to the Entra group and Team.');
+  $('cmd-apply').textContent='./scripts/Install-Sagamore.ps1';
+};
+$('btn-add-client').onclick=()=>{
+  const raw=prompt('Client name'); if(!raw)return;
+  let n; try{n=P.folderName(raw);}catch(e){toast(e.message);return;}
+  if((cfg.clients||[]).some(c=>c.name.toLowerCase()===n.toLowerCase())){toast('Client already exists.');return;}
+  (cfg.clients=cfg.clients||[]).push({name:n,folders:[]}); selPath='Clients/'+n; collapsed.delete('Clients'); setDirty(true);
+};
+})();
+</script>
+</body>
+</html>

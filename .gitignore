@@ -1,0 +1,15 @@
+# Real tenant config (people, client names, app id) stays out of git; only the example is committed.
+config/*.json
+!config/sagamore.config.example.json
+
+# Run output
+logs/
+output/
+*.log
+Sagamore-Staff-Sync-Instructions.txt
+testResults.xml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
