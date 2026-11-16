@@ -99,6 +99,9 @@ pre.cmd{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px s
 .drop{border:2px dashed var(--border2);border-radius:var(--radius);padding:50px 20px;text-align:center;color:var(--text2);max-width:640px;margin:60px auto}
 .drop.over{border-color:var(--accent)}
 .drop h2{color:var(--text);font-size:18px;margin-bottom:6px}
+pre.runlog{max-height:340px;overflow:auto;white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;font-size:11.5px}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--text2);margin:8px 0}
+.check input{margin-top:3px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);padding:8px 16px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 .hidden{display:none!important}
@@ -120,6 +123,8 @@ pre.cmd{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px s
   <h2>Open your Sagamore config</h2>
   <p>Drop <code>config/sagamore.config.json</code> here, or click <b>Open config…</b>.</p>
   <p class="mini" style="margin-top:10px">Everything stays on this computer. Changes are applied to SharePoint by running the installer — this page never signs in to Microsoft 365.</p>
+  <p class="mini" style="margin-top:10px">For one-click Preview and Apply, start it with <code>./scripts/Start-SagamoreDashboard.ps1</code> instead.</p>
+  <p class="note warn hidden" id="landing-msg" style="margin-top:14px"></p>
 </section>
 
 <main id="app" class="wrap hidden">
@@ -154,13 +159,27 @@ pre.cmd{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px s
     <div class="card">
       <h2>Apply changes</h2>
       <div id="problems"></div>
-      <ol class="steps">
-        <li><b>Save config</b> over <code>config/sagamore.config.json</code> in the sagamore-m365 folder.</li>
-        <li>Preview what will change:<pre class="cmd" id="cmd-whatif"></pre></li>
-        <li>Apply it:<pre class="cmd" id="cmd-apply"></pre></li>
-        <li>Confirm SharePoint matches:<pre class="cmd" id="cmd-audit"></pre></li>
-      </ol>
-      <div class="row"><button class="btn" id="btn-copy">Copy apply command</button></div>
+      <div id="manual">
+        <ol class="steps">
+          <li><b>Save config</b> over <code>config/sagamore.config.json</code> in the sagamore-m365 folder.</li>
+          <li>Preview what will change:<pre class="cmd" id="cmd-whatif"></pre></li>
+          <li>Apply it:<pre class="cmd" id="cmd-apply"></pre></li>
+          <li>Confirm SharePoint matches:<pre class="cmd" id="cmd-audit"></pre></li>
+        </ol>
+        <div class="row"><button class="btn" id="btn-copy">Copy apply command</button></div>
+      </div>
+      <div id="runner" class="hidden">
+        <p class="mini" id="run-hint"></p>
+        <label class="check"><input type="checkbox" id="chk-full"><span>Full install: also update security groups and Team membership (needed after adding a person)</span></label>
+        <div class="row">
+          <button class="btn" id="btn-preview">1. Preview</button>
+          <button class="btn primary" id="btn-apply" disabled>2. Apply</button>
+          <button class="btn" id="btn-audit">Audit</button>
+          <button class="btn danger hidden" id="btn-stop">Stop</button>
+        </div>
+        <div class="row" style="margin-top:10px"><span id="run-state" class="pill hidden"></span><span class="mini" id="run-label"></span></div>
+        <pre class="cmd runlog hidden" id="run-log"></pre>
+      </div>
     </div>
   </div>
 </main>
@@ -174,6 +193,11 @@ const P = window.SagamorePlan;
 const $ = (id) => document.getElementById(id);
 const ROLE_CLS = {'Full Control':'r-fc','Edit':'r-ed','Contribute':'r-co','Add Only':'r-ao','Read':'r-rd'};
 let cfg = null, fileHandle = null, fileName = 'sagamore.config.json', dirty = false;
+// Served by Start-SagamoreDashboard.ps1? It passes a per-start token in the URL fragment (never sent over the network).
+let TOKEN = new URLSearchParams(location.hash.slice(1)).get('token');
+try{ if(TOKEN) sessionStorage.setItem('sag-token',TOKEN); else TOKEN=sessionStorage.getItem('sag-token'); }catch(e){}
+const LOCAL = !!TOKEN && location.protocol.startsWith('http');
+if(LOCAL && location.hash) history.replaceState(null,'',location.pathname);
 let selPerson = null, selPath = null, collapsed = new Set();
 const CMD = {
   whatif: './scripts/Install-Sagamore.ps1 -PermissionsOnly -WhatIf',
@@ -212,6 +236,15 @@ const land=$('landing');
 document.addEventListener('drop',async e=>{const f=e.dataTransfer.files[0];if(f){fileHandle=null;loadText(await f.text(),f.name);}});
 $('btn-save').onclick=async()=>{
   const text=JSON.stringify(cfg,null,2)+'\n';
+  if(LOCAL){
+    try{
+      const r=await api('PUT','/api/config',text);
+      if(!r.ok){toast((r.data&&r.data.error)||('Save failed ('+r.status+')'));if(r.data&&r.data.errors&&r.data.errors.length)$('problems').replaceChildren(el('ul',{class:'problems'},r.data.errors.map(e=>el('li',{text:e}))));return;}
+      runStatus=Object.assign(runStatus||{},{applyReady:r.data.status.applyReady});
+      dirty=false; render(); toast('Saved. Now Preview, then Apply.');
+    }catch(e){toast('Save failed: the dashboard server is not running.');}
+    return;
+  }
   try{
     if(fileHandle&&fileHandle.createWritable){const w=await fileHandle.createWritable();await w.write(text);await w.close();toast('Saved to '+fileName);}
     else{const a=el('a',{href:URL.createObjectURL(new Blob([text],{type:'application/json'})),download:'sagamore.config.json'});document.body.append(a);a.click();a.remove();toast('Downloaded — copy it over config/sagamore.config.json');}
@@ -224,6 +257,78 @@ if(location.hash==='#example'&&location.protocol.startsWith('http')){
 }
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 $('btn-copy').onclick=()=>{navigator.clipboard.writeText(CMD.apply).then(()=>toast('Copied'),()=>toast('Copy failed — select the text instead'));};
+
+/* ---------- local runner (Start-SagamoreDashboard.ps1): one-click save / preview / apply / audit ---------- */
+function landingMsg(m){const n=$('landing-msg');n.textContent=m;n.classList.toggle('hidden',!m);}
+async function api(method,path,body){
+  const h={'X-Sagamore-Token':TOKEN}; if(body!==undefined)h['Content-Type']='application/json';
+  const r=await fetch(path,{method,headers:h,body,cache:'no-store'});
+  const text=await r.text(); let data=null; try{data=JSON.parse(text);}catch(e){}
+  return {ok:r.ok,status:r.status,data,text};
+}
+let runStatus=null, runFrom=0, runTimer=null, shownRunId=null;
+function runKind(){return $('chk-full').checked?'full':'perms';}
+function renderRunner(){
+  if(!LOCAL||!cfg)return;
+  const errs=P.validate(cfg,{allowPlaceholderClientId:true}).length>0;
+  const running=!!(runStatus&&runStatus.running);
+  const ready=!!(runStatus&&runStatus.applyReady&&runStatus.applyReady[runKind()]);
+  const blocked=dirty||errs||running;
+  $('btn-preview').disabled=blocked; $('btn-audit').disabled=blocked; $('btn-apply').disabled=blocked||!ready;
+  $('chk-full').disabled=running;
+  $('btn-stop').classList.toggle('hidden',!running);
+  $('run-hint').textContent= errs?'Fix the problems above first.'
+    : dirty?'Save your changes first.'
+    : running?'Running… a Microsoft sign-in window may open; finish signing in there.'
+    : ready?'Preview passed for this exact config. Apply makes SharePoint and Teams match it.'
+    : 'Preview first: it signs in and lists every change without making any. Apply unlocks when it succeeds.';
+  const st=$('run-state');
+  if(runStatus&&runStatus.id){
+    st.classList.remove('hidden','ok','bad','dirty');
+    if(running){st.classList.add('dirty');st.textContent='Running';}
+    else if(runStatus.exitCode===0){st.classList.add('ok');st.textContent='Succeeded';}
+    else {st.classList.add('bad');st.textContent=runStatus.exitCode==null?'Stopped':'Failed (exit '+runStatus.exitCode+')';}
+    $('run-label').textContent=runStatus.label;
+  } else { st.classList.add('hidden'); $('run-label').textContent=''; }
+}
+async function pollRun(){
+  clearTimeout(runTimer);
+  try{
+    const r=await api('GET','/api/run?from='+runFrom);
+    if(!r.ok){toast((r.data&&r.data.error)||'Lost contact with the dashboard server.');return;}
+    const s=r.data, log=$('run-log');
+    if(s.id){
+      if(s.id!==shownRunId){shownRunId=s.id;log.textContent='';if(runFrom!==0){runFrom=0;return pollRun();}}
+      const atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<30;
+      log.textContent+=s.output; log.classList.remove('hidden'); runFrom=s.next;
+      if(atBottom)log.scrollTop=log.scrollHeight;
+      if(runStatus&&runStatus.running&&!s.running) toast(s.label+(s.exitCode===0?' succeeded':' did not succeed — see the output'));
+    }
+    runStatus=s; renderRunner();
+    if(s.running) runTimer=setTimeout(pollRun,1000);
+  }catch(e){toast('Lost contact with the dashboard server. Is Start-SagamoreDashboard.ps1 still running?');}
+}
+async function startRun(action){
+  const r=await api('POST','/api/run',JSON.stringify({action}));
+  if(!r.ok){toast((r.data&&r.data.error)||('Could not start ('+r.status+')'));return;}
+  runFrom=0; shownRunId=null; runStatus=r.data; pollRun();
+}
+$('btn-preview').onclick=()=>startRun(runKind()==='full'?'previewFull':'preview');
+$('btn-apply').onclick=()=>{
+  const full=runKind()==='full';
+  if(!confirm(full?'Run the full install now? This updates groups, the Team, channels and all folder permissions to match the config.':'Apply the previewed permission changes to SharePoint and Teams now?'))return;
+  startRun(full?'installFull':'apply');
+};
+$('btn-audit').onclick=()=>startRun('audit');
+$('btn-stop').onclick=async()=>{if(!confirm('Stop the running command? A half-finished apply is safe to re-run.'))return;const r=await api('POST','/api/run/stop');if(!r.ok)toast(r.data&&r.data.error);pollRun();};
+$('chk-full').onchange=renderRunner;
+if(LOCAL){
+  $('btn-open').classList.add('hidden'); $('manual').classList.add('hidden'); $('runner').classList.remove('hidden');
+  api('GET','/api/config').then(r=>{
+    if(r.ok){loadText(r.text,'sagamore.config.json');pollRun();}
+    else landingMsg((r.data&&r.data.error)||('The dashboard server refused the request ('+r.status+').'));
+  }).catch(()=>landingMsg('Cannot reach the dashboard server. Start it again with ./scripts/Start-SagamoreDashboard.ps1.'));
+}
 
 /* ---------- config source lookup: which config object controls a path ---------- */
 function sourceOf(path){
@@ -288,7 +393,7 @@ function render(){
   else {st.classList.add('ok');st.textContent='Config valid';}
   $('btn-save').disabled=!dirty||errs.length>0;
   $('problems').replaceChildren(errs.length?el('ul',{class:'problems'},errs.map(e=>el('li',{text:e}))):'');
-  renderPeople(); renderClients(); renderTree(); renderEditor();
+  renderPeople(); renderClients(); renderTree(); renderEditor(); renderRunner();
 }
 
 function renderPeople(){
@@ -465,6 +570,7 @@ $('btn-add-person').onclick=()=>{
   cfg.people.push({upn,displayName:name,role:r}); setDirty(true);
   toast('Added. A full install (not -PermissionsOnly) adds them to the Entra group and Team.');
   $('cmd-apply').textContent='./scripts/Install-Sagamore.ps1';
+  $('chk-full').checked=true; renderRunner();
 };
 $('btn-add-client').onclick=()=>{
   const raw=prompt('Client name'); if(!raw)return;

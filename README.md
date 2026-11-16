@@ -95,7 +95,24 @@ Folders are created and **locked before any file is uploaded**, so an Invoices f
 
 ## Changing permissions later (dashboard)
 
-Open `dashboard/index.html` in Edge or Chrome → **Open config…** → pick `config/sagamore.config.json`.
+**One-click (recommended):**
+
+```powershell
+./scripts/Start-SagamoreDashboard.ps1
+```
+
+This opens the dashboard in your browser, already loaded with `config/sagamore.config.json`. Make changes, then:
+
+1. **Save config**: validated first, and the previous file is backed up to `logs/config-backups/`.
+2. **1. Preview**: runs the installer with `-WhatIf`. A Microsoft sign-in window opens. Nothing is changed.
+3. **2. Apply**: unlocks only after a Preview of that exact config succeeds. Runs `-PermissionsOnly` (or the
+   full install when **Full install** is ticked, which is needed after adding a person).
+4. **Audit**: confirms SharePoint and Teams match the config.
+
+Output streams into the page and is saved to `logs/dashboard-*.txt`. The server only listens on `localhost`,
+needs a random per-start token (in the link it opens), and can only run that fixed list of commands. Ctrl+C stops it.
+
+**Manual:** open `dashboard/index.html` in Edge or Chrome → **Open config…** → pick `config/sagamore.config.json`.
 
 - Click a **person** to see exactly what they can open in every folder.
 - Click a **folder** to switch between "same as parent" and custom access, add/remove people or groups, or add subfolders.
@@ -154,6 +171,7 @@ Rules the code enforces:
 |---|---|
 | `scripts/Register-SagamoreApp.ps1` | One-time app registration; writes Client ID to config |
 | `scripts/Install-Sagamore.ps1` | Install / re-apply. `-PlanOnly`, `-WhatIf`, `-PermissionsOnly`, `-SkipTeams` |
+| `scripts/Start-SagamoreDashboard.ps1` | Local dashboard server: one-click Save / Preview / Apply / Audit |
 | `scripts/Test-SagamoreInstall.ps1` | Read-only audit with CSV report |
 | `scripts/Import-SagamoreClients.ps1` | Import local client folders (+ files with `-UploadFiles`) |
 | `scripts/Uninstall-Sagamore.ps1` | Remove the group, site and Team (30-day restore). Requires `-ConfirmAlias` |
@@ -175,6 +193,8 @@ Rules the code enforces:
 - config validation and folder-plan logic (Invoices lock, Owner protection, client-silo rule, ordering, name sanitising)
 - private-channel plan: who is invited to which client channel, and the invite/remove comparison
 - **parity**: the dashboard's JavaScript and the installer's PowerShell produce the identical folder plan, channel invitations and validation errors
+- **server**: starts the real dashboard server and checks the token/origin guard, config validation and backup,
+  the command whitelist, the Preview-before-Apply rule and live output (runs only the offline plan)
 - **contract**: every PnP cmdlet and parameter the scripts use exists in the installed PnP.PowerShell
 - PSScriptAnalyzer (errors) and parse checks
 
