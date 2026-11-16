@@ -22,6 +22,10 @@
         Sagamore tenant and syncing the Sagamore library. If it is installed but not running it is started.
         While the dashboard is open the check repeats every minute and OneDrive is restarted if it quits
         (at most once every 5 minutes, so a crashing OneDrive is not restarted in a loop).
+      - Office save settings: checks that Excel, Word and PowerPoint save into the synced Sagamore library by
+        default with AutoSave on. "Fix save settings" in the page changes the user's own Office settings
+        (HKCU only, previous values logged to logs/office-settings-<time>.json). Nothing is changed without
+        that click; admin policies that get in the way are reported, never touched.
       - Drop folder: creates "Sagamore Drop" on the desktop. Files dragged into it are offered in the page
         for upload to a Teams channel (scripts/Send-SagamoreDrop.ps1), after the user confirms that they will
         take the channel folder's permissions.
@@ -262,6 +266,41 @@ function Get-DropStatus {
     }
 }
 
+function Get-OfficeSaveStatus {
+    <#
+        Office save-settings status for the page. Needs the OneDrive status for the synced library folder,
+        because "save to Sagamore by default" means "save into that folder". Never changes anything.
+    #>
+    $od = Get-OneDriveStatus
+    $facts = Get-SagamoreOfficeSaveFacts
+    $s = Test-SagamoreOfficeSaveState -Facts $facts -SyncedPath $od.syncedPath
+    return @{
+        overall    = $s.Overall
+        checks     = @($s.Checks | ForEach-Object { @{ id = $_.Id; label = $_.Label; status = $_.Status; detail = $_.Detail; fix = $_.Fix } })
+        changes    = @($s.Changes | ForEach-Object { $_.Why })
+        canFix     = [bool]@($s.Changes).Count
+        syncedPath = $od.syncedPath
+        error      = $od.error
+    }
+}
+
+function Invoke-OfficeSaveFix {
+    <#
+        Applies the user-level Office changes (Set-SagamoreOfficeSaveDefaults) after logging the old values,
+        so every change can be put back by hand. Recomputes the changes here rather than trusting the page.
+    #>
+    $od = Get-OneDriveStatus
+    $facts = Get-SagamoreOfficeSaveFacts
+    $changes = @(Get-SagamoreOfficeSaveChanges -Facts $facts -SyncedPath $od.syncedPath)
+    if (-not $changes.Count) { return @{ applied = @(); log = $null } }
+    $log = Join-Path $LogDirectory ('office-settings-{0:yyyyMMdd-HHmmss}.json' -f (Get-Date))
+    $changes | ForEach-Object { @{ path = $_.Path; name = $_.Name; old = $_.Old; new = $(if ($_.Remove) { '(removed)' } else { $_.Value }); why = $_.Why } } |
+        ConvertTo-Json -Depth 4 -AsArray | Set-Content -Path $log -Encoding utf8
+    $done = @(Set-SagamoreOfficeSaveDefaults -Changes $changes)
+    foreach ($c in $done) { Write-Host "  > Office: $($c.Why)" -ForegroundColor Yellow }
+    return @{ applied = @($done | ForEach-Object { $_.Why }); log = $log }
+}
+
 # ------------------------------------------------------------------
 # Request handling
 # ------------------------------------------------------------------
@@ -352,6 +391,16 @@ function Invoke-Request($Ctx) {
         }
 
         # --- Drop folder ---
+        # --- Office save settings ---
+        'GET /api/officesave' { return Send-Json $Ctx 200 (Get-OfficeSaveStatus) }
+        'POST /api/officesave/fix' {
+            if (-not $IsWindows) { return Send-Json $Ctx 409 @{ error = 'Office settings can only be changed on Windows.' } }
+            $r = Invoke-OfficeSaveFix
+            $status = Get-OfficeSaveStatus
+            $status.applied = $r.applied
+            $status.log = $r.log
+            return Send-Json $Ctx 200 $status
+        }
         'GET /api/drop' { return Send-Json $Ctx 200 (Get-DropStatus) }
         'POST /api/drop/open' {
             # Opens the drop folder in File Explorer so the user can drag files in.
@@ -414,6 +463,16 @@ try {
     }
     Write-Host ''
 } catch { Write-Host "OneDrive check failed: $($_.Exception.Message)" -ForegroundColor Yellow }
+# Start-up Office save-settings check (report only; the fix is a button in the page).
+try {
+    $os = Get-OfficeSaveStatus
+    foreach ($c in $os.checks) {
+        $color = @{ ok = 'Green'; warn = 'Yellow'; fail = 'Red' }[$c.status]
+        Write-Host ('  Office:   [{0,-4}] {1} -- {2}' -f $c.status.ToUpper(), $c.label, $c.detail) -ForegroundColor $color
+        if ($c.fix) { Write-Host "            $($c.fix)" -ForegroundColor $color }
+    }
+    Write-Host ''
+} catch { Write-Host "Office check failed: $($_.Exception.Message)" -ForegroundColor Yellow }
 if (-not $NoBrowser) { Start-Process $url }
 
 try {

@@ -23,7 +23,10 @@ SharePoint/Teams tenant. Read README.md first; it is the source of truth for beh
 Code complete: installer, audit, client import, uninstall, dashboard, and the one-click local runner
 (`scripts/Start-SagamoreDashboard.ps1`). 76 offline tests pass.
 Added 2026-11-16: desktop drop folder -> Teams channel upload (`Send-SagamoreDrop.ps1`) and OneDrive health/auto-start
-in the dashboard. Offline tests: 84 (one Windows-only). Never run against a tenant yet. The first real send should be a
+in the dashboard. Offline tests: 84 (one Windows-only).
+Added 2026-11-16 (later): Office save settings (`*-SagamoreOfficeSave*` in Sagamore.Desktop.psm1, `/api/officesave`,
+"Saving from Office" card). Writes HKCU Office 16.0 only, on a button click; policies are only reported.
+Pester was not available in the session that wrote it: CI (windows-latest) is the first full run. Never run against a tenant yet. The first real send should be a
 test file into a test client. `Set-PnPListItemPermission -InheritPermissions` is new to this repo: Contract.Tests checks it.
 Not done yet (needs Marshall / tenant access, can't be done offline):
 1. Create `config/sagamore.config.json` with real UPNs, roles and clients.

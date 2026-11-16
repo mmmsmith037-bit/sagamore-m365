@@ -94,6 +94,103 @@ Describe 'OneDrive evaluation' {
     }
 }
 
+Describe 'Office save settings' {
+    BeforeAll {
+        $script:Synced = 'C:\Users\joe\Sagamore Alliance'
+        # Office set up exactly as wanted; each test breaks one thing.
+        function script:New-OfficeFacts {
+            @{
+                IsWindows = $true; OfficeInstalled = $true
+                PreferCloud = 0; PreferCloudPolicy = $null; CloudOnly = $null; CloudOnlyPolicy = $null
+                Paths          = @{ Excel = $Synced; Word = "$Synced\Internal"; PowerPoint = "$Synced\" }
+                DontAutoSave   = @{ Excel = $null; Word = $null; PowerPoint = $null }
+                AutoSavePolicy = @{ Excel = $null; Word = $null; PowerPoint = $null }
+                OcsiPolicy     = $null
+            }
+        }
+    }
+
+    It 'is ok, with nothing to change, when Office already saves into the synced library' {
+        $s = Test-SagamoreOfficeSaveState -Facts (New-OfficeFacts) -SyncedPath $Synced
+        $s.Overall | Should -Be 'ok'
+        @($s.Changes).Count | Should -Be 0
+    }
+
+    It 'treats "never set" as cloud-first and points every app at the synced folder' {
+        $f = New-OfficeFacts; $f.PreferCloud = $null; $f.Paths = @{ Excel = $null; Word = 'C:\Users\joe\Documents'; PowerPoint = $null }
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $Synced
+        Status $s 'saveLocation' | Should -Be 'warn'
+        ($s.Checks | Where-Object Id -eq 'saveLocation').Detail | Should -Match 'personal OneDrive'
+        $c = @($s.Changes)
+        ($c | Where-Object Name -eq 'PreferCloudSaveLocations').Value | Should -Be 0
+        @($c | Where-Object Kind -eq 'ExpandString' | ForEach-Object Value) | Should -Be @($Synced, $Synced, $Synced)
+        @($c | Where-Object Kind -eq 'ExpandString' | ForEach-Object Name) | Should -Be @('DefaultPath', 'DOC-PATH', 'Default')
+    }
+
+    It 'compares folders case-insensitively and accepts subfolders and %VARIABLES%' {
+        Test-SagamorePathUnder -Path 'c:\users\JOE\sagamore alliance\Clients' -Root $Synced | Should -BeTrue
+        Test-SagamorePathUnder -Path 'C:\Users\joe\Sagamore Alliance Old' -Root $Synced | Should -BeFalse
+        Test-SagamorePathUnder -Path $null -Root $Synced | Should -BeFalse
+    }
+
+    It 'changes nothing about the save location until the library is synced' {
+        $f = New-OfficeFacts; $f.PreferCloud = 1
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $null
+        Status $s 'saveLocation' | Should -Be 'warn'
+        ($s.Checks | Where-Object Id -eq 'saveLocation').Fix | Should -Match 'Sync the library first'
+        @($s.Changes).Count | Should -Be 0
+    }
+
+    It 'turns off cloud-only Save As set by the user, but only reports it when a policy sets it' {
+        $f = New-OfficeFacts; $f.CloudOnly = 1
+        @(Get-SagamoreOfficeSaveChanges -Facts $f -SyncedPath $Synced).Name | Should -Be @('EnableCloudOnlySaveAsMode')
+        $f = New-OfficeFacts; $f.CloudOnlyPolicy = 1
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $Synced
+        Status $s 'saveLocation' | Should -Be 'warn'
+        @($s.Changes).Count | Should -Be 0
+        ($s.Checks | Where-Object Id -eq 'saveLocation').Fix | Should -Match 'IT admin'
+    }
+
+    It 'removes a per-user DontAutoSave switch even before the library is synced' {
+        $f = New-OfficeFacts; $f.DontAutoSave.Excel = 1
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $null
+        Status $s 'autosave' | Should -Be 'warn'
+        $c = @($s.Changes)
+        $c.Count | Should -Be 1
+        $c[0].Remove | Should -BeTrue
+        $c[0].Path | Should -Match 'Office\\16\.0\\Excel$'
+    }
+
+    It 'only reports an admin AutoSave policy, and fails when Office/OneDrive integration is blocked' {
+        $f = New-OfficeFacts; $f.AutoSavePolicy.Word = 1
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $Synced
+        Status $s 'autosave' | Should -Be 'warn'
+        ($s.Checks | Where-Object Id -eq 'autosave').Fix | Should -Match 'IT admin'
+        @($s.Changes).Count | Should -Be 0
+
+        $f = New-OfficeFacts; $f.OcsiPolicy = 0
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $Synced
+        $s.Overall | Should -Be 'fail'
+        Status $s 'coauth' | Should -Be 'fail'
+    }
+
+    It 'warns when Office is missing and reports unsupported off Windows, with nothing to change' {
+        $f = New-OfficeFacts; $f.OfficeInstalled = $false; $f.PreferCloud = 1
+        $s = Test-SagamoreOfficeSaveState -Facts $f -SyncedPath $Synced
+        $s.Overall | Should -Be 'warn'
+        @($s.Changes).Count | Should -Be 0
+        (Test-SagamoreOfficeSaveState -Facts @{ IsWindows = $false } -SyncedPath $Synced).Overall | Should -Be 'unsupported'
+    }
+
+    It 'refuses to write anywhere but the user''s own Office settings' {
+        { Set-SagamoreOfficeSaveDefaults -Changes @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive'; Name = 'X'; Kind = 'DWord'; Value = 1; Remove = $false }) -WhatIf } |
+            Should -Throw '*only*Office*16.0*'
+        { Set-SagamoreOfficeSaveDefaults -Changes @(@{ Path = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Excel'; Name = 'X'; Kind = 'DWord'; Value = 1; Remove = $false }) -WhatIf } |
+            Should -Throw
+        @(Set-SagamoreOfficeSaveDefaults -Changes @() ).Count | Should -Be 0
+    }
+}
+
 Describe 'Drop destinations' {
     It 'offers one entry per Teams channel, private client channels rooted at Clients/<client>' {
         $d = @(Get-SagamoreDropDestinations -Config (New-Cfg))

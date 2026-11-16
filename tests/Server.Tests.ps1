@@ -196,4 +196,14 @@ Describe 'Dashboard server: drop folder and OneDrive' {
         $o.libraryUrl | Should -Be 'https://sagamorealliance.sharepoint.com/sites/SagamoreAlliance/Shared%20Documents'
         $o.autoStarted | Should -BeFalse     # -NoOneDriveStart
     }
+
+    It 'reports Office save settings without changing anything, and only changes them on Windows' {
+        $o = (Api GET '/api/officesave').Data
+        $o.overall | Should -BeIn @('ok', 'warn', 'fail', 'unsupported')
+        @($o.checks).Count | Should -BeGreaterThan 0
+        if (-not $IsWindows) {
+            (Api POST '/api/officesave/fix' '{}').Status | Should -Be 409
+        }
+        @(Get-ChildItem $Logs -Filter 'office-settings-*' -ErrorAction SilentlyContinue).Count | Should -Be 0
+    }
 }

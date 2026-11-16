@@ -157,6 +157,30 @@ cannot drift apart on content. Who can see what is kept in step by Apply (channe
 and proven by Audit. OneDrive keeps this PC's copy in step with SharePoint, and the dashboard keeps OneDrive running and signed in.
 The dashboard does not sync files itself.
 
+**Saving from Office.** The goal is that a file saved once from Excel, Word or PowerPoint is the same file in
+SharePoint, Teams and on every device, with AutoSave on. That is Office's and OneDrive's own behaviour; the
+dashboard only makes sure it is set up. The **Saving from Office** card checks three things:
+
+| Check | ok when | If not |
+|---|---|---|
+| Office works with OneDrive | no `EnableAllOcsiClients = 0` OneDrive policy on the PC | **fail**: an admin must remove the policy (AutoSave and co-authoring on synced files are blocked) |
+| AutoSave on by default | no per-user `DontAutoSave = 1` and no "Turn off AutoSave by default" policy | per-user switch: fixable; policy: reported for the admin |
+| Saves go to Sagamore | "Save to Computer by default" is on and each app's default folder is inside the synced Sagamore library | fixable once the library is synced |
+
+Office has no setting for "save to this SharePoint site by default": its cloud-first save goes to the user's
+*personal* OneDrive. So **Fix save settings** sets `PreferCloudSaveLocations = 0` and points the default
+folder of each app (`Excel\Options\DefaultPath`, `Word\Options\DOC-PATH`, `PowerPoint\RecentFolderList\Default`)
+at the folder where OneDrive syncs the Sagamore library. A save there is uploaded by OneDrive. It also turns
+off a user-level cloud-only Save As (which would hide that folder) and removes `DontAutoSave`.
+
+- Only the user's own settings under `HKCU\Software\Microsoft\Office\16.0` are changed, and only when the
+  button is clicked. Policies (`HKCU\Software\Policies`, `HKLM`) are read, never written.
+- Old values are written to `logs/office-settings-<time>.json` before anything changes.
+- Office reads these settings when it starts: close and reopen Office apps afterwards.
+- The default folder is the library root. People with Read-only access there (Support) still open their
+  client folder from it to save.
+- Windows only. Until the library is synced (OneDrive card) only the AutoSave fix is offered.
+
 ## Permission model
 
 | Where | Owner | Member | Support |
@@ -206,7 +230,7 @@ Rules the code enforces:
 |---|---|
 | `scripts/Register-SagamoreApp.ps1` | One-time app registration; writes Client ID to config |
 | `scripts/Install-Sagamore.ps1` | Install / re-apply. `-PlanOnly`, `-WhatIf`, `-PermissionsOnly`, `-SkipTeams` |
-| `scripts/Start-SagamoreDashboard.ps1` | Local dashboard server: one-click Save / Preview / Apply / Audit, drop folder, OneDrive check |
+| `scripts/Start-SagamoreDashboard.ps1` | Local dashboard server: one-click Save / Preview / Apply / Audit, drop folder, OneDrive and Office save checks |
 | `scripts/Send-SagamoreDrop.ps1` | Upload drop-folder files to a channel folder and force them to inherit. Started by the dashboard; `-PlanOnly` is offline |
 | `scripts/Test-SagamoreInstall.ps1` | Read-only audit with CSV report |
 | `scripts/Import-SagamoreClients.ps1` | Import local client folders (+ files with `-UploadFiles`) |
@@ -231,7 +255,7 @@ Rules the code enforces:
 - **parity**: the dashboard's JavaScript and the installer's PowerShell produce the identical folder plan, channel invitations and validation errors
 - **server**: starts the real dashboard server and checks the token/origin guard, config validation and backup,
   the command whitelist, the Preview-before-Apply rule and live output (runs only the offline plan)
-- **desktop**: OneDrive health rules (from simulated machine state, so they run on any OS), drop-folder listing and
+- **desktop**: OneDrive health and Office save-setting rules (from simulated machine state, so they run on any OS), drop-folder listing and
   archiving, which destinations are allowed, request validation, and `Send-SagamoreDrop.ps1 -PlanOnly`
 - **server** (drop folder): unacknowledged, out-of-channel and path-traversal requests are refused; a valid one starts the uploader
 - **contract**: every PnP cmdlet and parameter the scripts use exists in the installed PnP.PowerShell

@@ -4,6 +4,8 @@
 
       * OneDrive health: is the sync app installed, running, signed in to the Sagamore tenant, and is the
         Sagamore document library synced to this PC?
+      * Office save settings: do Excel, Word and PowerPoint save into the synced Sagamore folder by default,
+        with AutoSave on? (The dashboard can fix the user-level settings; policies are only reported.)
       * The desktop drop folder: files dragged into it are offered for upload to a Teams channel the next
         time the dashboard is opened (see scripts/Send-SagamoreDrop.ps1).
 
@@ -167,6 +169,267 @@ function Start-SagamoreOneDrive {
         return $true
     }
     return $false
+}
+
+# ------------------------------------------------------------------
+# Office save settings
+# ------------------------------------------------------------------
+<#
+    Goal: when someone in Excel, Word or PowerPoint presses Save, the file lands in the Sagamore SharePoint
+    library (through the OneDrive-synced folder) and AutoSave is on. This uses Office's own features only,
+    and the dashboard just makes sure they are set up.
+
+    There is no single Office setting for "save to this SharePoint site by default". Office's cloud-first
+    save (PreferCloudSaveLocations = 1) points at the user's PERSONAL OneDrive, not a SharePoint site. So the
+    approach is:
+      1. OneDrive syncs the Sagamore library to a local folder (checked by Test-SagamoreOneDriveState).
+      2. PreferCloudSaveLocations = 0 ("Save to Computer by default") makes Office's default save location the
+         per-app default folder...
+      3. ...and each app's default folder is set to that synced folder, so a save there is uploaded to SharePoint
+         by OneDrive and is the same file seen in Teams and on every other device.
+      4. AutoSave works for files opened from a synced folder as long as nothing turns it off (a user
+         "DontAutoSave" value or an admin policy) and Office/OneDrive integration is not blocked by policy.
+
+    Everything the dashboard WRITES is under HKCU\Software\Microsoft\Office\16.0 (the user's own settings, no
+    admin rights needed). Policy keys (HKCU\Software\Policies, HKLM) are only READ: if a policy gets in the way
+    the check says so and names who has to change it, because a user-level change would be overridden anyway.
+
+    Value names and locations (Microsoft 365 Apps / Office 16.0, Windows):
+      Common\General\PreferCloudSaveLocations   DWORD  0 = "Save to Computer by default" ticked
+      Excel\Options\DefaultPath                 EXPAND_SZ  Excel default local file location
+      Word\Options\DOC-PATH                     EXPAND_SZ  Word default local file location
+      PowerPoint\RecentFolderList\Default       EXPAND_SZ  PowerPoint default local file location
+      Common\FileIO\EnableCloudOnlySaveAsMode   DWORD  1 = Save As shows cloud locations only (hides the synced folder)
+      <App>\DontAutoSave                        DWORD  1 = legacy per-user "AutoSave off" switch
+      Policies\...\<app>\AutoSaveByDefaultAdminChoice   set by the "Turn off AutoSave by default in <app>" policy
+      HKLM\SOFTWARE\Policies\Microsoft\OneDrive\EnableAllOcsiClients   DWORD  0 = Office/OneDrive integration
+                                                (AutoSave, co-authoring on synced files) blocked by an admin
+#>
+
+$script:OfficeRoot   = 'HKCU:\Software\Microsoft\Office\16.0'
+$script:OfficePolicy = 'HKCU:\Software\Policies\Microsoft\Office\16.0'
+# Where each app keeps its default local save folder. Order = order shown on the dashboard.
+$script:OfficeApps = [ordered]@{
+    Excel      = @{ Key = "$script:OfficeRoot\Excel\Options";                Name = 'DefaultPath' }
+    Word       = @{ Key = "$script:OfficeRoot\Word\Options";                 Name = 'DOC-PATH' }
+    PowerPoint = @{ Key = "$script:OfficeRoot\PowerPoint\RecentFolderList";  Name = 'Default' }
+}
+
+function Get-SagamoreRegValue {
+    <# One registry value, or $null when the key or value does not exist. Never throws. #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+    try {
+        $p = Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop
+        return $p.$Name
+    } catch { return $null }
+}
+
+function Get-SagamoreOfficeSaveFacts {
+    <#
+        Reads raw Office/OneDrive save settings for the CURRENT Windows user. Changes nothing.
+        Returns a hashtable the pure functions below understand:
+          IsWindows          - $false on macOS/Linux (tests, CI); everything else is then empty
+          OfficeInstalled    - Microsoft 365 Apps / Office 16.0 found for this user or machine
+          PreferCloud        - Common\General\PreferCloudSaveLocations (user), $null = never set (Office treats as 1)
+          PreferCloudPolicy  - same value set by an admin policy, $null = no policy
+          CloudOnly          - Common\FileIO\EnableCloudOnlySaveAsMode (user)
+          CloudOnlyPolicy    - same, set by policy
+          Paths              - @{ Excel = '...'; Word = '...'; PowerPoint = '...' } default local folders ($null = not set)
+          DontAutoSave       - @{ Excel = 1; ... } legacy per-user AutoSave-off values ($null = not set)
+          AutoSavePolicy     - @{ Excel = <value>; ... } "Turn off AutoSave by default" policy values ($null = no policy)
+          OcsiPolicy         - HKLM OneDrive EnableAllOcsiClients policy ($null = no policy, the normal case)
+    #>
+    [CmdletBinding()]
+    param()
+
+    $facts = @{
+        IsWindows = [bool]$IsWindows; OfficeInstalled = $false
+        PreferCloud = $null; PreferCloudPolicy = $null; CloudOnly = $null; CloudOnlyPolicy = $null
+        Paths = @{}; DontAutoSave = @{}; AutoSavePolicy = @{}; OcsiPolicy = $null
+    }
+    if (-not $IsWindows) { return $facts }
+
+    # Click-to-Run (Microsoft 365 Apps) registers here; the HKCU 16.0 key exists once any Office app has run.
+    $facts.OfficeInstalled = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration') -or (Test-Path $script:OfficeRoot)
+
+    $facts.PreferCloud       = Get-SagamoreRegValue "$script:OfficeRoot\Common\General" 'PreferCloudSaveLocations'
+    $facts.PreferCloudPolicy = Get-SagamoreRegValue "$script:OfficePolicy\Common\General" 'PreferCloudSaveLocations'
+    $facts.CloudOnly         = Get-SagamoreRegValue "$script:OfficeRoot\Common\FileIO" 'EnableCloudOnlySaveAsMode'
+    $facts.CloudOnlyPolicy   = Get-SagamoreRegValue "$script:OfficePolicy\Common\FileIO" 'EnableCloudOnlySaveAsMode'
+    $facts.OcsiPolicy        = Get-SagamoreRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive' 'EnableAllOcsiClients'
+
+    foreach ($app in $script:OfficeApps.Keys) {
+        $a = $script:OfficeApps[$app]
+        $facts.Paths[$app]          = Get-SagamoreRegValue $a.Key $a.Name
+        $facts.DontAutoSave[$app]   = Get-SagamoreRegValue "$script:OfficeRoot\$app" 'DontAutoSave'
+        $facts.AutoSavePolicy[$app] = Get-SagamoreRegValue "$script:OfficePolicy\$($app.ToLower())" 'AutoSaveByDefaultAdminChoice'
+    }
+    return $facts
+}
+
+function Test-SagamorePathUnder {
+    <# PURE. True when $Path is $Root or a folder inside it (case-insensitive, ignores trailing slashes, expands %VARS%). #>
+    param([AllowNull()][string]$Path, [Parameter(Mandatory)][string]$Root)
+    if (-not $Path) { return $false }
+    $p = [Environment]::ExpandEnvironmentVariables($Path).TrimEnd('\', '/').ToLower()
+    $r = [Environment]::ExpandEnvironmentVariables($Root).TrimEnd('\', '/').ToLower()
+    return ($p -eq $r -or $p.StartsWith("$r\") -or $p.StartsWith("$r/"))
+}
+
+function Get-SagamoreOfficeSaveChanges {
+    <#
+        PURE. The user-level registry changes needed so Office saves into the synced Sagamore folder with AutoSave
+        on. Returns an array of:
+          @{ Path; Name; Kind = 'DWord'|'ExpandString'; Value; Remove = $bool; Old; Why }
+        Nothing is returned for things only an admin can change (policies); Test-SagamoreOfficeSaveState reports those.
+
+        SyncedPath = local folder where OneDrive syncs the Sagamore library (Test-SagamoreOneDriveState.SyncedPath).
+        Without it the save-location changes are skipped: pointing Office at a folder that does not exist yet
+        would make every Save fail.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Facts, [AllowNull()][AllowEmptyString()][string]$SyncedPath)
+
+    $changes = [System.Collections.Generic.List[hashtable]]::new()
+    if (-not $Facts.IsWindows -or -not $Facts.OfficeInstalled) { return @() }
+
+    if ($SyncedPath) {
+        # Office treats "never set" as 1 (cloud first), so anything other than an explicit 0 needs setting.
+        if ($Facts.PreferCloud -ne 0) {
+            $changes.Add(@{ Path = "$script:OfficeRoot\Common\General"; Name = 'PreferCloudSaveLocations'; Kind = 'DWord'; Value = 0; Remove = $false
+                Old = $Facts.PreferCloud; Why = 'Use the default folder below instead of personal OneDrive ("Save to Computer by default").' })
+        }
+        foreach ($app in $script:OfficeApps.Keys) {
+            $cur = $Facts.Paths[$app]
+            if (-not (Test-SagamorePathUnder -Path $cur -Root $SyncedPath)) {
+                $a = $script:OfficeApps[$app]
+                $changes.Add(@{ Path = $a.Key; Name = $a.Name; Kind = 'ExpandString'; Value = $SyncedPath; Remove = $false
+                    Old = $cur; Why = "$app saves into the synced Sagamore folder by default." })
+            }
+        }
+        # Cloud-only Save As hides PC folders, including the synced Sagamore folder set above.
+        if ($Facts.CloudOnly -eq 1) {
+            $changes.Add(@{ Path = "$script:OfficeRoot\Common\FileIO"; Name = 'EnableCloudOnlySaveAsMode'; Kind = 'DWord'; Value = 0; Remove = $false
+                Old = 1; Why = 'Show the synced Sagamore folder in Save As (cloud-only Save As hides it).' })
+        }
+    }
+
+    # Legacy per-user AutoSave-off switch: removing it restores Office's default (AutoSave on for cloud files).
+    foreach ($app in $script:OfficeApps.Keys) {
+        if ($Facts.DontAutoSave[$app] -eq 1) {
+            $changes.Add(@{ Path = "$script:OfficeRoot\$app"; Name = 'DontAutoSave'; Kind = 'DWord'; Value = $null; Remove = $true
+                Old = 1; Why = "Turn AutoSave back on by default in $app." })
+        }
+    }
+    return $changes.ToArray()
+}
+
+function Test-SagamoreOfficeSaveState {
+    <#
+        PURE. Turns Get-SagamoreOfficeSaveFacts output (plus the synced library folder) into a dashboard status:
+          @{ Overall = 'ok'|'warn'|'fail'|'unsupported'; Checks = @( @{ Id; Label; Status; Detail; Fix } ); Changes }
+        Changes = Get-SagamoreOfficeSaveChanges output; when non-empty, "Fix save settings" can apply them.
+        Problems the dashboard can fix itself are warnings; only a policy that blocks AutoSave/co-authoring
+        outright is a failure, because no button here can fix it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Facts, [AllowNull()][AllowEmptyString()][string]$SyncedPath)
+
+    if (-not $Facts.IsWindows) {
+        return @{ Overall = 'unsupported'; Changes = @()
+            Checks = @(@{ Id = 'platform'; Label = 'Office save settings'; Status = 'warn'; Detail = 'Office settings can only be checked on Windows.'; Fix = '' }) }
+    }
+    if (-not $Facts.OfficeInstalled) {
+        return @{ Overall = 'warn'; Changes = @()
+            Checks = @(@{ Id = 'office'; Label = 'Office installed'; Status = 'warn'; Detail = 'Microsoft 365 Apps (Excel, Word, PowerPoint) were not found for this Windows user.'
+                Fix = 'Install Microsoft 365 Apps from https://portal.office.com and sign in with your Sagamore account, then check again.' }) }
+    }
+
+    $changes = @(Get-SagamoreOfficeSaveChanges -Facts $Facts -SyncedPath $SyncedPath)
+    $checks = [System.Collections.Generic.List[hashtable]]::new()
+
+    # 1. Office <-> OneDrive integration. Without it AutoSave and co-authoring do not work on synced files.
+    $blocked = $Facts.OcsiPolicy -eq 0
+    $checks.Add(@{ Id = 'coauth'; Label = 'Office works with OneDrive'; Status = $(if ($blocked) { 'fail' } else { 'ok' })
+        Detail = $(if ($blocked) { 'A policy on this PC stops Office and OneDrive working together, so AutoSave and co-authoring are off for synced files.' }
+                   else { 'Office can AutoSave and co-author files in synced folders.' })
+        Fix    = $(if ($blocked) { 'Ask the IT admin to remove the OneDrive policy "Coauthor and share in Office desktop apps" (EnableAllOcsiClients = 0) from this PC.' } else { '' }) })
+
+    # 2. AutoSave on by default for cloud files.
+    $userOff   = @($script:OfficeApps.Keys | Where-Object { $Facts.DontAutoSave[$_] -eq 1 })
+    $policyOff = @($script:OfficeApps.Keys | Where-Object { $null -ne $Facts.AutoSavePolicy[$_] -and $Facts.AutoSavePolicy[$_] -ne 0 })
+    $autoOk = -not $userOff.Count -and -not $policyOff.Count
+    $checks.Add(@{ Id = 'autosave'; Label = 'AutoSave on by default'; Status = $(if ($autoOk) { 'ok' } else { 'warn' })
+        Detail = $(if ($autoOk) { 'Files in SharePoint or OneDrive save every few seconds.' }
+                   else { @(
+                       $(if ($userOff.Count) { "Turned off on this PC for $($userOff -join ', ')." })
+                       $(if ($policyOff.Count) { "An admin policy turns it off by default for $($policyOff -join ', ')." })
+                   ) -join ' ' })
+        Fix    = $(if ($autoOk) { '' }
+                   elseif ($userOff.Count -and -not $policyOff.Count) { 'Click "Fix save settings".' }
+                   elseif ($userOff.Count) { 'Click "Fix save settings", and ask the IT admin to remove the "Turn off AutoSave by default" policy.' }
+                   else { 'Ask the IT admin to remove the "Turn off AutoSave by default" policy. Until then, switch AutoSave on with the toggle at the top left of each file.' }) })
+
+    # 3. Default save location = the synced Sagamore folder.
+    if (-not $SyncedPath) {
+        $checks.Add(@{ Id = 'saveLocation'; Label = 'Saves go to Sagamore'; Status = 'warn'
+            Detail = 'Office cannot default to the Sagamore library until it is synced to this PC.'
+            Fix    = 'Sync the library first (see the OneDrive card), then click "Fix save settings".' })
+    } else {
+        $pending = @($changes | Where-Object { -not $_.Remove })
+        $policyCloud = $Facts.PreferCloudPolicy -eq 1
+        $policyCloudOnly = $Facts.CloudOnlyPolicy -eq 1
+        $status = if ($pending.Count -or $policyCloud -or $policyCloudOnly) { 'warn' } else { 'ok' }
+        $detail = if ($status -eq 'ok') { "Excel, Word and PowerPoint save to $SyncedPath, which OneDrive keeps in SharePoint and Teams." }
+                  else { @(
+                      $(if ($Facts.PreferCloud -ne 0) { 'Office saves to personal OneDrive by default, not the Sagamore library.' }
+                        elseif (@($pending | Where-Object { $_.Kind -eq 'ExpandString' }).Count) { 'Some Office apps save to a folder outside Sagamore by default.' }
+                        elseif ($pending.Count) { 'Save As is in cloud-only mode, which hides the synced Sagamore folder.' })
+                      $(if ($policyCloud) { 'An admin policy forces saving to personal OneDrive first.' })
+                      $(if ($policyCloudOnly) { 'An admin policy hides PC folders (including the synced Sagamore folder) in Save As.' })
+                  ) -join ' ' }
+        $fix = @(
+            $(if ($pending.Count) { 'Click "Fix save settings", then close and reopen Excel, Word and PowerPoint.' })
+            $(if ($policyCloud -or $policyCloudOnly) { 'Ask the IT admin to remove the Office policies "PreferCloudSaveLocations" / "EnableCloudOnlySaveAsMode" for Sagamore users.' })
+        ) -join ' '
+        $checks.Add(@{ Id = 'saveLocation'; Label = 'Saves go to Sagamore'; Status = $status; Detail = $detail; Fix = $fix })
+    }
+
+    $statuses = @($checks | ForEach-Object { $_.Status })
+    $overall = if ('fail' -in $statuses) { 'fail' } elseif ('warn' -in $statuses) { 'warn' } else { 'ok' }
+    return @{ Overall = $overall; Checks = $checks.ToArray(); Changes = $changes }
+}
+
+function Set-SagamoreOfficeSaveDefaults {
+    <#
+        Applies Get-SagamoreOfficeSaveChanges output. Returns the changes that were made (each with its Old value,
+        so the caller can log them and they can be put back by hand).
+
+        Defence in depth: refuses any change outside HKCU\Software\Microsoft\Office\16.0, so this can never be
+        used to write policies or machine-wide keys whatever it is handed. Office reads these at start-up, so
+        apps that are already open keep the old behaviour until they are restarted.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Changes)
+
+    $done = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($c in $Changes) {
+        if (-not ([string]$c.Path).StartsWith("$script:OfficeRoot\", [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to change '$($c.Path)': only $script:OfficeRoot is managed."
+        }
+        $target = "$($c.Path)\$($c.Name)"
+        if ($c.Remove) {
+            if ($PSCmdlet.ShouldProcess($target, 'Remove value')) {
+                Remove-ItemProperty -Path $c.Path -Name $c.Name -ErrorAction SilentlyContinue
+                $done.Add($c)
+            }
+        } elseif ($PSCmdlet.ShouldProcess($target, "Set to '$($c.Value)'")) {
+            if (-not (Test-Path $c.Path)) { New-Item -Path $c.Path -Force | Out-Null }
+            New-ItemProperty -Path $c.Path -Name $c.Name -PropertyType $c.Kind -Value $c.Value -Force | Out-Null
+            $done.Add($c)
+        }
+    }
+    return $done.ToArray()
 }
 
 # ------------------------------------------------------------------

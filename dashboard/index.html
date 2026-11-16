@@ -221,6 +221,16 @@ dialog.dlg::backdrop{background:#0008}
       </div>
       <p class="mini" style="margin-top:8px">Checked every minute while this page is open. If OneDrive quits it is started again.</p>
     </div>
+    <div class="card hidden" id="os-card">
+      <h2>Saving from Office</h2>
+      <p class="mini">Excel, Word and PowerPoint should save into the synced Sagamore library with AutoSave on, so a file saved once is the same file in SharePoint, Teams and on every device.</p>
+      <div id="os-checks"></div>
+      <ul class="mini hidden" id="os-changes" style="margin:6px 0 0 18px"></ul>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary hidden" id="btn-os-fix">Fix save settings</button>
+      </div>
+      <p class="mini" style="margin-top:8px">Only your own Office settings are changed, and the old values are logged. Close and reopen Office apps afterwards.</p>
+    </div>
   </div>
 </main>
 <dialog class="dlg" id="drop-dlg">
@@ -639,9 +649,10 @@ function sendable(){return dropStatus?dropStatus.items.filter(i=>i.sendable):[];
 function dropSig(){return sendable().map(i=>i.name+'|'+i.size+'|'+i.modified).sort().join('\n');}
 
 function startDesktop(){
-  $('drop-card').classList.remove('hidden'); $('od-card').classList.remove('hidden');
-  refreshOneDrive(); refreshDrop(true);
+  $('drop-card').classList.remove('hidden'); $('od-card').classList.remove('hidden'); $('os-card').classList.remove('hidden');
+  refreshOneDrive(); refreshOfficeSave(); refreshDrop(true);
   setInterval(refreshOneDrive,60000);   // also what restarts OneDrive if it quits
+  setInterval(refreshOfficeSave,60000); // picks up a library that has just finished syncing
   setInterval(()=>refreshDrop(true),15000);
 }
 
@@ -664,6 +675,30 @@ function renderOneDrive(){
 $('od-pill').onclick=()=>$('od-card').scrollIntoView({behavior:'smooth'});
 $('btn-od-refresh').onclick=refreshOneDrive;
 $('btn-od-start').onclick=async()=>{const r=await api('POST','/api/onedrive/start');if(!r.ok){toast((r.data&&r.data.error)||'Could not start OneDrive.');return;}odStatus=r.data;renderOneDrive();toast('OneDrive started. If it asks you to sign in, use your Sagamore account.');};
+
+/* ---- Office save settings ----
+   Read-only until "Fix save settings" is clicked. The server recomputes the changes itself on the fix request,
+   so the list shown here is only for the user to read. */
+let osStatus=null;
+async function refreshOfficeSave(){
+  try{const r=await api('GET','/api/officesave'); if(r.ok){osStatus=r.data; renderOfficeSave();}}catch(e){}
+}
+function renderOfficeSave(){
+  const s=osStatus, box=$('os-checks'); if(!s)return;
+  box.replaceChildren();
+  s.checks.forEach(c=>box.append(el('div',{class:'chk-row'},el('span',{class:'dot '+c.status}),
+    el('div',{},el('div',{text:c.label}),el('div',{class:'fix',text:c.detail}),c.fix?el('div',{class:'fix',style:'color:var(--text)',text:'→ '+c.fix}):null))));
+  const ul=$('os-changes'); ul.replaceChildren(); (s.changes||[]).forEach(t=>ul.append(el('li',{text:t})));
+  ul.classList.toggle('hidden',!s.canFix);
+  $('btn-os-fix').classList.toggle('hidden',!s.canFix);
+}
+$('btn-os-fix').onclick=async()=>{
+  if(!confirm('Change your Office save settings as listed? Close and reopen Excel, Word and PowerPoint afterwards.'))return;
+  const r=await api('POST','/api/officesave/fix');
+  if(!r.ok){toast((r.data&&r.data.error)||'Could not change the Office settings.');return;}
+  osStatus=r.data; renderOfficeSave();
+  toast((r.data.applied||[]).length?'Office settings updated. Close and reopen Excel, Word and PowerPoint.':'Nothing needed changing.');
+};
 
 /* ---- drop folder ---- */
 async function refreshDrop(autoOpen){
