@@ -11,10 +11,17 @@ BeforeAll {
     $script:Port = Get-Random -Minimum 20000 -Maximum 40000
     $script:Tok = 'test-' + [guid]::NewGuid().ToString('n')
     $script:Base = "http://localhost:$Port"
+    $script:Drop = Join-Path $Tmp 'Sagamore Drop'
     $pwsh = (Get-Process -Id $PID).Path
-    $script:Srv = Start-Process $pwsh -PassThru -WindowStyle Hidden -ArgumentList @(
-        '-NoProfile', '-File', (Join-Path $root 'scripts' 'Start-SagamoreDashboard.ps1'),
-        '-ConfigPath', $Cfg, '-Port', $Port, '-LogDirectory', $Logs, '-NoBrowser', '-Token', $Tok)
+    $srvArgs = @{
+        FilePath     = $pwsh
+        PassThru     = $true
+        ArgumentList = @('-NoProfile', '-File', (Join-Path $root 'scripts' 'Start-SagamoreDashboard.ps1'),
+            '-ConfigPath', $Cfg, '-Port', $Port, '-LogDirectory', $Logs, '-DropFolder', "`"$Drop`"", '-NoOneDriveStart', '-NoBrowser', '-Token', $Tok)
+    }
+    # -WindowStyle only exists on Windows; elsewhere the server runs without a window anyway.
+    if ($IsWindows) { $srvArgs.WindowStyle = 'Hidden' } else { $srvArgs.RedirectStandardOutput = (Join-Path $Tmp 'server.out') }
+    $script:Srv = Start-Process @srvArgs
     $deadline = (Get-Date).AddSeconds(30)
     do {
         Start-Sleep -Milliseconds 300
@@ -117,5 +124,76 @@ Describe 'Dashboard server' {
         $tail = (Api GET "/api/run?from=$($all.next)").Data
         $tail.output | Should -BeNullOrEmpty
         $tail.next | Should -Be $all.next
+    }
+}
+
+Describe 'Dashboard server: drop folder and OneDrive' {
+    It 'creates the drop folder with its _Sent archive on start-up' {
+        Join-Path $Drop '_Sent' | Should -Exist
+        Join-Path $Drop '_Sent' 'README.txt' | Should -Exist
+    }
+
+    It 'lists waiting files, explains folders, and offers only channel destinations' {
+        'pdf' | Set-Content (Join-Path $Drop 'Invoice 104.pdf')
+        New-Item -ItemType Directory (Join-Path $Drop 'Invoices') -Force | Out-Null
+        $d = (Api GET '/api/drop').Data
+        $d.folder | Should -Be ([IO.Path]::GetFullPath($Drop))
+        ($d.items | Where-Object name -eq 'Invoice 104.pdf').sendable | Should -BeTrue
+        ($d.items | Where-Object name -eq 'Invoices').sendable | Should -BeFalse
+        @($d.items | Where-Object name -eq '_Sent').Count | Should -Be 0
+        @($d.destinations | ForEach-Object channel) | Should -Be @('Internal', 'Meridian-Group', 'Hartwell-Inc')
+        ($d.destinations | Where-Object channel -eq 'Meridian-Group').folders | Should -Contain 'Clients/Meridian-Group/Invoices'
+        @($d.destinations.folders) | Should -Not -Contain '_Admin'
+    }
+
+    It 'refuses a send that is not acknowledged, goes outside the channels, or names unknown files' {
+        $r = Api POST '/api/drop/send' (@{ destination = 'Clients/Meridian-Group'; files = @('Invoice 104.pdf'); acknowledged = $false } | ConvertTo-Json)
+        $r.Status | Should -Be 400
+        ($r.Data.errors -join "`n") | Should -Match 'permissions'
+
+        $r = Api POST '/api/drop/send' (@{ destination = 'Clients/Meridian-Group'; files = @('Invoice 104.pdf'); acknowledged = 'true' } | ConvertTo-Json)
+        $r.Status | Should -Be 400
+
+        $r = Api POST '/api/drop/send' (@{ destination = '_Admin'; files = @('Invoice 104.pdf'); acknowledged = $true } | ConvertTo-Json)
+        $r.Status | Should -Be 400
+        ($r.Data.errors -join "`n") | Should -Match 'not a Teams channel folder'
+
+        $r = Api POST '/api/drop/send' (@{ destination = 'Clients/Meridian-Group'; files = @('../sagamore.config.json', 'Invoices', 'nope.pdf'); acknowledged = $true } | ConvertTo-Json)
+        $r.Status | Should -Be 400
+        $e = $r.Data.errors -join "`n"
+        $e | Should -Match 'not a file name'
+        $e | Should -Match 'Folders are not uploaded'
+        $e | Should -Match 'not in the drop folder'
+        @(Get-ChildItem $Logs -Filter 'drop-request-*' -ErrorAction SilentlyContinue).Count | Should -Be 0
+    }
+
+    It 'does not let the generic run endpoint start an upload' {
+        (Api POST '/api/run' '{"action":"drop"}').Status | Should -Be 400
+    }
+
+    It 'starts the uploader for a valid, acknowledged request and records exactly what was asked' {
+        $r = Api POST '/api/drop/send' (@{ destination = 'clients/meridian-group/INVOICES'; files = @('Invoice 104.pdf'); overwrite = $true; acknowledged = $true; extra = 'ignored' } | ConvertTo-Json)
+        $r.Status | Should -Be 202
+        $r.Data.action | Should -Be 'drop'
+        $req = Get-ChildItem $Logs -Filter 'drop-request-*.json' | Select-Object -First 1
+        $req | Should -Not -BeNullOrEmpty
+        $saved = Get-Content $req.FullName -Raw | ConvertFrom-Json -AsHashtable
+        $saved.files | Should -Be @('Invoice 104.pdf')
+        $saved.overwrite | Should -BeTrue
+        $saved.acknowledged | Should -BeTrue
+        $saved.ContainsKey('extra') | Should -BeFalse
+        # The example config has a placeholder app id, so the real uploader stops at validation (exit 2)
+        # before any sign-in. That proves the script was started with the request and drop folder.
+        $s = Wait-Run
+        $s.exitCode | Should -Be 2
+        $s.output | Should -Match 'clientId'
+        Join-Path $Drop 'Invoice 104.pdf' | Should -Exist
+    }
+
+    It 'reports OneDrive status without failing on any platform' {
+        $o = (Api GET '/api/onedrive').Data
+        $o.overall | Should -BeIn @('ok', 'warn', 'fail', 'unsupported')
+        $o.libraryUrl | Should -Be 'https://sagamorealliance.sharepoint.com/sites/SagamoreAlliance/Shared%20Documents'
+        $o.autoStarted | Should -BeFalse     # -NoOneDriveStart
     }
 }

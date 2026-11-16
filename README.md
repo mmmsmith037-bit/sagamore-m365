@@ -122,6 +122,41 @@ needs a random per-start token (in the link it opens), and can only run that fix
 The dashboard never signs in to Microsoft 365. It only edits the config file, and the installer applies it.
 To preview with sample data, run `python -m http.server` in the repo and open `http://localhost:8000/dashboard/#example`.
 
+## Desktop: drop folder and OneDrive
+
+`Start-SagamoreDashboard.ps1` also looks after the computer it runs on.
+
+**Drop folder.** On start it creates **`Sagamore Drop`** on the desktop (`-DropFolder` to put it elsewhere).
+Drag files into it at any time. When the dashboard is opened (and every 15 seconds while it is open), it pops up
+**Send files to Teams**:
+
+1. **Where:** pick the files, the Teams channel and a folder in that channel. Only folders managed by the config
+   are offered: a client's folder tree for its private channel (files show in the channel's **Client Files** tab), and
+   the channel folder for standard channels. The dialog lists exactly who can open that folder.
+2. **Confirm:** the files will take the folder's permissions and keep nothing they had before. Send stays
+   disabled until the user ticks *I understand*.
+3. **Send:** `scripts/Send-SagamoreDrop.ps1` runs (Microsoft sign-in window, as with Preview/Apply) and its
+   output streams under *Apply changes*. It:
+   - refuses to upload at all if the destination is missing or its permissions have never been applied (run Apply first)
+   - skips a same-named file unless *Replace* was ticked (a replace keeps the old version in version history)
+   - after each upload, removes any unique permissions or sharing links on the file so it **inherits**, then reads it back to verify
+   - moves the local copy to `Sagamore Drop\_Sent\<date>\` (nothing is deleted) and appends to `logs/drop-history.csv`
+
+Folders dropped into it are listed but **not uploaded**: a dropped folder named `Invoices` would be open to the
+whole channel until the next permissions run. Drop the files, or zip the folder.
+Files still open in another program, Office lock files (`~$…`) and unfinished downloads are skipped.
+
+**OneDrive.** On start, and every minute while the page is open, the dashboard checks that the OneDrive sync
+app is installed, running, signed in to the Sagamore tenant, and syncing the Sagamore library. If OneDrive is
+installed but not running it is started (at most once every 5 minutes; `-NoOneDriveStart` turns this off). The
+result shows in the header and the **OneDrive** card with the fix for each problem. Library sync is a warning
+only: uploads and the dashboard do not need it.
+
+What "kept in sync" means here: Teams channel files **are** the SharePoint library, so Teams and SharePoint
+cannot drift apart on content. Who can see what is kept in step by Apply (channel members = folder invitations)
+and proven by Audit. OneDrive keeps this PC's copy in step with SharePoint, and the dashboard keeps OneDrive running and signed in.
+The dashboard does not sync files itself.
+
 ## Permission model
 
 | Where | Owner | Member | Support |
@@ -171,7 +206,8 @@ Rules the code enforces:
 |---|---|
 | `scripts/Register-SagamoreApp.ps1` | One-time app registration; writes Client ID to config |
 | `scripts/Install-Sagamore.ps1` | Install / re-apply. `-PlanOnly`, `-WhatIf`, `-PermissionsOnly`, `-SkipTeams` |
-| `scripts/Start-SagamoreDashboard.ps1` | Local dashboard server: one-click Save / Preview / Apply / Audit |
+| `scripts/Start-SagamoreDashboard.ps1` | Local dashboard server: one-click Save / Preview / Apply / Audit, drop folder, OneDrive check |
+| `scripts/Send-SagamoreDrop.ps1` | Upload drop-folder files to a channel folder and force them to inherit. Started by the dashboard; `-PlanOnly` is offline |
 | `scripts/Test-SagamoreInstall.ps1` | Read-only audit with CSV report |
 | `scripts/Import-SagamoreClients.ps1` | Import local client folders (+ files with `-UploadFiles`) |
 | `scripts/Uninstall-Sagamore.ps1` | Remove the group, site and Team (30-day restore). Requires `-ConfirmAlias` |
@@ -195,6 +231,9 @@ Rules the code enforces:
 - **parity**: the dashboard's JavaScript and the installer's PowerShell produce the identical folder plan, channel invitations and validation errors
 - **server**: starts the real dashboard server and checks the token/origin guard, config validation and backup,
   the command whitelist, the Preview-before-Apply rule and live output (runs only the offline plan)
+- **desktop**: OneDrive health rules (from simulated machine state, so they run on any OS), drop-folder listing and
+  archiving, which destinations are allowed, request validation, and `Send-SagamoreDrop.ps1 -PlanOnly`
+- **server** (drop folder): unacknowledged, out-of-channel and path-traversal requests are refused; a valid one starts the uploader
 - **contract**: every PnP cmdlet and parameter the scripts use exists in the installed PnP.PowerShell
 - PSScriptAnalyzer (errors) and parse checks
 

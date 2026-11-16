@@ -17,6 +17,15 @@
     Sign-in to Microsoft 365 happens in the installer's own browser window, exactly as when it is run by hand.
     Press Ctrl+C in this window to stop the server.
 
+    Desktop features (see src/Sagamore.Desktop.psm1):
+      - OneDrive: on start-up checks that the OneDrive sync app is installed, running, signed in to the
+        Sagamore tenant and syncing the Sagamore library. If it is installed but not running it is started.
+        While the dashboard is open the check repeats every minute and OneDrive is restarted if it quits
+        (at most once every 5 minutes, so a crashing OneDrive is not restarted in a loop).
+      - Drop folder: creates "Sagamore Drop" on the desktop. Files dragged into it are offered in the page
+        for upload to a Teams channel (scripts/Send-SagamoreDrop.ps1), after the user confirms that they will
+        take the channel folder's permissions.
+
 .EXAMPLE
     ./scripts/Start-SagamoreDashboard.ps1
 #>
@@ -25,6 +34,10 @@ param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot '..' 'config' 'sagamore.config.json'),
     [ValidateRange(1024, 65535)][int]$Port = 8765,
     [string]$LogDirectory = (Join-Path $PSScriptRoot '..' 'logs'),
+    # Defaults to "Sagamore Drop" on the current user's desktop.
+    [string]$DropFolder,
+    # Do not start OneDrive automatically (the check is still shown).
+    [switch]$NoOneDriveStart,
     [switch]$NoBrowser,
     # For tests only. Normally a fresh random token is generated each start.
     [string]$Token
@@ -33,9 +46,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..' 'src' 'Sagamore.Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..' 'src' 'Sagamore.Desktop.psm1') -Force
 
 $ConfigPath   = [IO.Path]::GetFullPath($ConfigPath)
 $LogDirectory = [IO.Path]::GetFullPath($LogDirectory)
+if (-not $DropFolder) { $DropFolder = Get-SagamoreDefaultDropFolder }
+$DropFolder   = Initialize-SagamoreDropFolder -Path $DropFolder
 $dashboardDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..' 'dashboard'))
 $backupDir    = Join-Path $LogDirectory 'config-backups'
 $pwshPath     = (Get-Process -Id $PID).Path
@@ -50,6 +66,9 @@ $Actions = [ordered]@{
     previewFull = @{ Script = 'Install-Sagamore.ps1';     Args = @('-WhatIf');                     Label = 'Preview full install';       Kind = 'full';  Role = 'preview' }
     installFull = @{ Script = 'Install-Sagamore.ps1';     Args = @();                              Label = 'Full install';               Kind = 'full';  Role = 'apply'   }
     audit       = @{ Script = 'Test-SagamoreInstall.ps1'; Args = @();                              Label = 'Audit';                      Kind = $null;   Role = 'check'   }
+    # Only started through POST /api/drop/send (which validates the request and writes the request file);
+    # POST /api/run refuses Role 'drop'.
+    drop        = @{ Script = 'Send-SagamoreDrop.ps1';    Args = @();                              Label = 'Send files to Teams';        Kind = $null;   Role = 'drop'    }
 }
 $Static = @{
     '/dashboard/'           = @{ File = 'index.html'; Type = 'text/html; charset=utf-8' }
@@ -64,6 +83,8 @@ $Utf8           = [Text.UTF8Encoding]::new($false)
 $script:Run      = $null    # the current or most recent run
 $script:RunSeq   = 0
 $script:Previewed = @{}     # Kind -> config hash that last passed a Preview
+$script:OneDriveStartedAt = [datetime]::MinValue   # last time this server started OneDrive (restart throttle)
+$OneDriveRestartEvery = [timespan]::FromMinutes(5)
 
 # ------------------------------------------------------------------
 # Helpers
@@ -144,7 +165,10 @@ function Get-RunStatus([long]$From = 0) {
     }
 }
 
-function Start-Run([string]$Action) {
+function Start-Run([string]$Action, [System.Collections.IDictionary]$Named = @{}) {
+    # $Named (parameter name -> value) comes only from this server (e.g. the request file path it just wrote),
+    # never from the page. Names are checked and values single-quoted so a path with spaces or quotes cannot
+    # break the command line.
     $def = $Actions[$Action]
     $hash = Get-ConfigHash
     if (-not $hash) { throw [IO.FileNotFoundException]::new("No config at $ConfigPath.") }
@@ -155,10 +179,14 @@ function Start-Run([string]$Action) {
     $outFile = Join-Path $LogDirectory ('dashboard-{0:yyyyMMdd-HHmmss}-{1}.txt' -f (Get-Date), $Action)
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
     $scriptPath = Join-Path $PSScriptRoot $def.Script
+    $extra = @($Named.Keys | ForEach-Object {
+        if ($_ -notmatch '^[A-Za-z]+$') { throw "Bad parameter name '$_'." }
+        "-$_ $(& $q ([string]$Named[$_]))"
+    }) -join ' '
     $cmd = @(
         '$PSStyle.OutputRendering = ''PlainText'''
         '$global:LASTEXITCODE = 0'
-        "try { & $(& $q $scriptPath) -ConfigPath $(& $q $ConfigPath) $($def.Args -join ' ') *>&1 | Out-String -Stream -Width 300 }"
+        "try { & $(& $q $scriptPath) -ConfigPath $(& $q $ConfigPath) $($def.Args -join ' ') $extra *>&1 | Out-String -Stream -Width 300 }"
         'catch { Write-Output ($_ | Out-String); exit 1 }'
         'exit $LASTEXITCODE'
     ) -join "`n"
@@ -172,6 +200,67 @@ function Start-Run([string]$Action) {
 }
 
 function Test-Running { Update-RunState; [bool]($script:Run -and -not $script:Run.Done) }
+
+function Read-ConfigOrNull {
+    <# The saved config if it exists and is valid, else $null plus a message. Desktop features need a valid one. #>
+    if (-not (Test-Path $ConfigPath)) { return @{ Config = $null; Error = "No config at $ConfigPath yet." } }
+    try { $c = Read-SagamoreConfig -Path $ConfigPath } catch { return @{ Config = $null; Error = $_.Exception.Message } }
+    $errs = @(Test-SagamoreConfig -Config $c -AllowPlaceholderClientId)
+    if ($errs.Count) { return @{ Config = $null; Error = 'The saved config has problems; fix and save it first.' } }
+    return @{ Config = $c; Error = $null }
+}
+
+function Get-OneDriveStatus([switch]$AllowAutoStart) {
+    <#
+        Current OneDrive health for the page. With -AllowAutoStart (start-up and the page's periodic check),
+        an installed-but-stopped OneDrive is started, at most once per $OneDriveRestartEvery.
+    #>
+    $r = Read-ConfigOrNull
+    $facts = Get-SagamoreOneDriveFacts
+    $autoStarted = $false
+    if ($AllowAutoStart -and -not $NoOneDriveStart -and $facts.IsWindows -and $facts.ExePath -and -not $facts.Running -and
+        ((Get-Date) - $script:OneDriveStartedAt) -gt $OneDriveRestartEvery) {
+        $autoStarted = Start-SagamoreOneDrive -Facts $facts
+        if ($autoStarted) {
+            $script:OneDriveStartedAt = Get-Date
+            Write-Host '  > OneDrive was not running; started it.' -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+            $facts = Get-SagamoreOneDriveFacts
+        }
+    }
+    if (-not $r.Config) {
+        return @{ overall = 'unknown'; checks = @(); error = $r.Error; autoStarted = $autoStarted; libraryUrl = $null; syncedPath = $null }
+    }
+    $s = Test-SagamoreOneDriveState -Facts $facts -Config $r.Config
+    $libUrl = (Get-SagamoreSiteUrl -Config $r.Config) + '/' + ([string]$r.Config.site.library -replace ' ', '%20')
+    return @{
+        overall     = $s.Overall
+        checks      = @($s.Checks | ForEach-Object { @{ id = $_.Id; label = $_.Label; status = $_.Status; detail = $_.Detail; fix = $_.Fix } })
+        syncedPath  = $s.SyncedPath
+        libraryUrl  = $libUrl
+        canStart    = [bool]($facts.IsWindows -and $facts.ExePath -and -not $facts.Running)
+        autoStarted = $autoStarted
+        error       = $null
+    }
+}
+
+function Get-DropStatus {
+    <# What is waiting in the drop folder, plus where it may go (from the SAVED config, which is what the uploader uses). #>
+    $r = Read-ConfigOrNull
+    $items = @(Get-SagamoreDropItems -Path $DropFolder)
+    $dests = @()
+    if ($r.Config) {
+        $dests = @(Get-SagamoreDropDestinations -Config $r.Config | ForEach-Object {
+            @{ channel = $_.Channel; type = $_.Type; root = $_.Root; folders = @($_.Folders) }
+        })
+    }
+    @{
+        folder       = $DropFolder
+        items        = @($items | ForEach-Object { @{ name = $_.Name; kind = $_.Kind; size = $_.Size; modified = $_.Modified; sendable = $_.Sendable; reason = $_.Reason } })
+        destinations = $dests
+        error        = $r.Error
+    }
+}
 
 # ------------------------------------------------------------------
 # Request handling
@@ -236,6 +325,7 @@ function Invoke-Request($Ctx) {
         'POST /api/run' {
             try { $action = [string]((Read-Body $Ctx | ConvertFrom-Json -AsHashtable).action) } catch { $action = '' }
             if (-not $action -or -not $Actions.Contains($action)) { return Send-Json $Ctx 400 @{ error = "Unknown action '$action'." } }
+            if ($Actions[$action].Role -eq 'drop') { return Send-Json $Ctx 400 @{ error = 'Send files with the drop folder dialog.' } }
             if (Test-Running) { return Send-Json $Ctx 409 @{ error = 'Another run is still in progress.' } }
             $refused = Start-Run $action
             if ($refused) { return Send-Json $Ctx 409 $refused }
@@ -246,6 +336,50 @@ function Invoke-Request($Ctx) {
             $script:Run.Process.Kill($true)
             Write-Host '  > Run stopped from the dashboard.' -ForegroundColor Yellow
             return Send-Json $Ctx 200 @{ stopped = $true }
+        }
+
+        # --- OneDrive ---
+        'GET /api/onedrive' {
+            # The page calls this on load and every minute; that is what keeps OneDrive running.
+            return Send-Json $Ctx 200 (Get-OneDriveStatus -AllowAutoStart)
+        }
+        'POST /api/onedrive/start' {
+            $facts = Get-SagamoreOneDriveFacts
+            if (-not $facts.IsWindows) { return Send-Json $Ctx 409 @{ error = 'OneDrive can only be started on Windows.' } }
+            if (-not $facts.ExePath) { return Send-Json $Ctx 409 @{ error = 'OneDrive is not installed for this Windows user.' } }
+            if (Start-SagamoreOneDrive -Facts $facts) { $script:OneDriveStartedAt = Get-Date; Start-Sleep -Seconds 2 }
+            return Send-Json $Ctx 200 (Get-OneDriveStatus)
+        }
+
+        # --- Drop folder ---
+        'GET /api/drop' { return Send-Json $Ctx 200 (Get-DropStatus) }
+        'POST /api/drop/open' {
+            # Opens the drop folder in File Explorer so the user can drag files in.
+            if ($IsWindows) { Invoke-Item -LiteralPath $DropFolder }
+            return Send-Json $Ctx 200 @{ opened = [bool]$IsWindows; folder = $DropFolder }
+        }
+        'POST /api/drop/send' {
+            if (Test-Running) { return Send-Json $Ctx 409 @{ error = 'Another run is still in progress. Send again when it finishes.' } }
+            try { $reqBody = Read-Body $Ctx | ConvertFrom-Json -AsHashtable } catch { return Send-Json $Ctx 400 @{ error = 'Not valid JSON.'; errors = @() } }
+            if ($reqBody -isnot [hashtable]) { return Send-Json $Ctx 400 @{ error = 'Bad request.'; errors = @() } }
+            $r = Read-ConfigOrNull
+            if (-not $r.Config) { return Send-Json $Ctx 409 @{ error = $r.Error; errors = @() } }
+            # Keep only the fields the uploader understands; anything else in the body is dropped.
+            $clean = [ordered]@{
+                destination  = [string](Get-OrDefault $reqBody 'destination' '')
+                files        = @(@(Get-OrDefault $reqBody 'files' @()) | ForEach-Object { [string]$_ })
+                # Booleans only: a string such as "true" or a number is NOT accepted as yes.
+                overwrite    = $(($v = Get-OrDefault $reqBody 'overwrite' $false) -is [bool] -and $v)
+                acknowledged = $(($v = Get-OrDefault $reqBody 'acknowledged' $false) -is [bool] -and $v)
+                requestedAt  = (Get-Date).ToString('o')
+            }
+            $check = Test-SagamoreDropRequest -Config $r.Config -Request $clean -Items @(Get-SagamoreDropItems -Path $DropFolder)
+            if ($check.Errors.Count) { return Send-Json $Ctx 400 @{ error = 'Not sent.'; errors = $check.Errors } }
+            $reqFile = Join-Path $LogDirectory ('drop-request-{0:yyyyMMdd-HHmmss-fff}.json' -f (Get-Date))
+            [IO.File]::WriteAllText($reqFile, ($clean | ConvertTo-Json -Depth 5), $Utf8)
+            $refused = Start-Run 'drop' ([ordered]@{ RequestPath = $reqFile; DropFolder = $DropFolder })
+            if ($refused) { return Send-Json $Ctx 409 $refused }
+            return Send-Json $Ctx 202 (Get-RunStatus 0)
         }
         default { return Send-Json $Ctx 404 @{ error = 'Not found.' } }
     }
@@ -264,9 +398,22 @@ $url = "http://localhost:$Port/dashboard/#token=$Token"
 Write-Host ''
 Write-Host 'Sagamore Permission Manager is running on this computer only.' -ForegroundColor Green
 Write-Host "  Config: $ConfigPath"
+Write-Host "  Drop:   $DropFolder  (drag files here to send them to a Teams channel)"
 Write-Host "  Open:   $url"
 Write-Host '  Press Ctrl+C to stop.'
 Write-Host ''
+
+# Start-up OneDrive check (also starts OneDrive if it is installed but not running).
+try {
+    $od = Get-OneDriveStatus -AllowAutoStart
+    if ($od.error) { Write-Host "OneDrive check skipped: $($od.error)" -ForegroundColor Yellow }
+    foreach ($c in $od.checks) {
+        $color = @{ ok = 'Green'; warn = 'Yellow'; fail = 'Red' }[$c.status]
+        Write-Host ('  OneDrive: [{0,-4}] {1} -- {2}' -f $c.status.ToUpper(), $c.label, $c.detail) -ForegroundColor $color
+        if ($c.fix) { Write-Host "            $($c.fix)" -ForegroundColor $color }
+    }
+    Write-Host ''
+} catch { Write-Host "OneDrive check failed: $($_.Exception.Message)" -ForegroundColor Yellow }
 if (-not $NoBrowser) { Start-Process $url }
 
 try {

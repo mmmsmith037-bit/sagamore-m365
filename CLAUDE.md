@@ -14,9 +14,17 @@ SharePoint/Teams tenant. Read README.md first; it is the source of truth for beh
   unless Marshall asks for it in the conversation. `-PlanOnly` is offline and always safe.
 - `git` is not on PATH on this machine.
 
+- Desktop-side code (OneDrive, drop folder) lives in `src/Sagamore.Desktop.psm1`: machine reads in `Get-*Facts` /
+  `Get-*Items`, decisions in pure functions so they test on any OS. Drop destinations come from
+  `Get-SagamoreDropDestinations` (PowerShell only; the server hands them to the page, so there is no JS copy).
+- `Send-SagamoreDrop.ps1` without `-PlanOnly` signs in and uploads: same rule as the installer, only when Marshall asks.
+
 ## Status (2026-11-16)
 Code complete: installer, audit, client import, uninstall, dashboard, and the one-click local runner
 (`scripts/Start-SagamoreDashboard.ps1`). 76 offline tests pass.
+Added 2026-11-16: desktop drop folder -> Teams channel upload (`Send-SagamoreDrop.ps1`) and OneDrive health/auto-start
+in the dashboard. Offline tests: 84 (one Windows-only). Never run against a tenant yet. The first real send should be a
+test file into a test client. `Set-PnPListItemPermission -InheritPermissions` is new to this repo: Contract.Tests checks it.
 Not done yet (needs Marshall / tenant access, can't be done offline):
 1. Create `config/sagamore.config.json` with real UPNs, roles and clients.
 2. `Register-SagamoreApp.ps1` (Global Admin, possibly AmShot).

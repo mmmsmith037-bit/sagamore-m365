@@ -105,6 +105,27 @@ pre.runlog{max-height:340px;overflow:auto;white-space:pre-wrap;word-break:normal
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);padding:8px 16px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 .hidden{display:none!important}
+/* OneDrive + drop folder (local runner only) */
+.pill.link{cursor:pointer;background:none}
+.chk-row{display:flex;gap:8px;align-items:flex-start;margin:6px 0;font-size:13px}
+.chk-row .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex-shrink:0;background:var(--text3)}
+.dot.ok{background:var(--accent)} .dot.warn{background:var(--amber)} .dot.fail{background:var(--red)}
+.chk-row .fix{font-size:12px;color:var(--text2)}
+dialog.dlg{margin:auto;border:1px solid var(--border2);border-radius:12px;background:var(--surface);color:var(--text);width:min(640px,94vw);max-height:90vh;padding:0}
+dialog.dlg::backdrop{background:#0008}
+.dlg .dlg-h{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.dlg .dlg-h h3{font-size:15px;font-weight:600;flex:1}
+.dlg .dlg-b{padding:14px 18px;overflow:auto;max-height:calc(90vh - 120px)}
+.dlg .dlg-f{padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.files{border:1px solid var(--border);border-radius:6px;max-height:180px;overflow:auto;margin-bottom:12px}
+.files label{display:flex;gap:8px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px}
+.files label:last-child{border-bottom:none}
+.files .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.files .why{font-size:11px;color:var(--amber)}
+.files label.off{color:var(--text3)}
+.aud{border:1px solid var(--border);border-radius:6px;padding:6px 10px;margin-top:6px}
+.aud .acc-row{margin:4px 0}
+.note.big{font-size:13px;color:var(--text);border-left:3px solid var(--amber)}
 </style>
 </head>
 <body>
@@ -112,6 +133,8 @@ pre.runlog{max-height:340px;overflow:auto;white-space:pre-wrap;word-break:normal
   <div class="logo">S</div>
   <h1>Sagamore Alliance <span>Permission Manager</span></h1>
   <span id="status" class="pill hidden"></span>
+  <span id="od-pill" class="pill link hidden" title="OneDrive status (click for details)"></span>
+  <span id="drop-pill" class="pill link dirty hidden" title="Files waiting in the drop folder"></span>
   <div class="spacer"></div>
   <button class="btn" id="btn-open">Open config…</button>
   <button class="btn primary" id="btn-save" disabled>Save config</button>
@@ -181,8 +204,30 @@ pre.runlog{max-height:340px;overflow:auto;white-space:pre-wrap;word-break:normal
         <pre class="cmd runlog hidden" id="run-log"></pre>
       </div>
     </div>
+    <div class="card hidden" id="drop-card">
+      <h2>Drop folder <span class="spacer"></span><span class="mini" id="drop-count" style="text-transform:none;letter-spacing:0"></span></h2>
+      <p class="mini">Drag files into <code id="drop-path"></code> on your desktop. They are offered here for upload to a Teams channel.</p>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" id="btn-drop-send" disabled>Send files…</button>
+        <button class="btn" id="btn-drop-open">Open drop folder</button>
+      </div>
+    </div>
+    <div class="card hidden" id="od-card">
+      <h2>OneDrive <span class="spacer"></span><button class="btn" id="btn-od-refresh" style="padding:2px 8px">Check again</button></h2>
+      <div id="od-checks"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary hidden" id="btn-od-start">Start OneDrive</button>
+        <a class="btn hidden" id="od-lib" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">Open library</a>
+      </div>
+      <p class="mini" style="margin-top:8px">Checked every minute while this page is open. If OneDrive quits it is started again.</p>
+    </div>
   </div>
 </main>
+<dialog class="dlg" id="drop-dlg">
+  <div class="dlg-h"><h3 id="dlg-title">Send files to Teams</h3><button class="x" id="dlg-x" title="Close">×</button></div>
+  <div class="dlg-b" id="dlg-body"></div>
+  <div class="dlg-f" id="dlg-foot"></div>
+</dialog>
 <div class="toast" id="toast"></div>
 
 <script src="plan.js"></script>
@@ -275,6 +320,7 @@ function renderRunner(){
   const ready=!!(runStatus&&runStatus.applyReady&&runStatus.applyReady[runKind()]);
   const blocked=dirty||errs||running;
   $('btn-preview').disabled=blocked; $('btn-audit').disabled=blocked; $('btn-apply').disabled=blocked||!ready;
+  renderDropCard();
   $('chk-full').disabled=running;
   $('btn-stop').classList.toggle('hidden',!running);
   $('run-hint').textContent= errs?'Fix the problems above first.'
@@ -302,7 +348,10 @@ async function pollRun(){
       const atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<30;
       log.textContent+=s.output; log.classList.remove('hidden'); runFrom=s.next;
       if(atBottom)log.scrollTop=log.scrollHeight;
-      if(runStatus&&runStatus.running&&!s.running) toast(s.label+(s.exitCode===0?' succeeded':' did not succeed — see the output'));
+      if(runStatus&&runStatus.running&&!s.running){
+        toast(s.label+(s.exitCode===0?' succeeded':' did not succeed — see the output'));
+        if(s.action==='drop') refreshDrop(false);   // sent files have moved to _Sent; refresh the list
+      }
     }
     runStatus=s; renderRunner();
     if(s.running) runTimer=setTimeout(pollRun,1000);
@@ -325,7 +374,7 @@ $('chk-full').onchange=renderRunner;
 if(LOCAL){
   $('btn-open').classList.add('hidden'); $('manual').classList.add('hidden'); $('runner').classList.remove('hidden');
   api('GET','/api/config').then(r=>{
-    if(r.ok){loadText(r.text,'sagamore.config.json');pollRun();}
+    if(r.ok){loadText(r.text,'sagamore.config.json');pollRun();startDesktop();}
     else landingMsg((r.data&&r.data.error)||('The dashboard server refused the request ('+r.status+').'));
   }).catch(()=>landingMsg('Cannot reach the dashboard server. Start it again with ./scripts/Start-SagamoreDashboard.ps1.'));
 }
@@ -579,6 +628,173 @@ $('btn-add-client').onclick=()=>{
   (cfg.clients=cfg.clients||[]).push({name:n,access:{Owner:'Full Control'},folders:[]}); selPath='Clients/'+n; collapsed.delete('Clients'); setDirty(true);
   toast('Created as Owners-only. Invite people in the folder panel.');
 };
+
+/* ---------- desktop features (local runner only): OneDrive health + drop folder ----------
+   The server (Start-SagamoreDashboard.ps1) reads OneDrive state and the drop folder; this page only shows it.
+   Where files may go comes from the server too (from the SAVED config), so the page cannot invent a destination. */
+let odStatus=null, dropStatus=null, dropDismissed=null, dlg=null;
+const LOCKED=()=>((cfg.clientTemplate||{}).lockedFolderNames||[]).map(s=>s.toLowerCase());
+function fmtSize(n){if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(0)+' KB';return (n/1048576).toFixed(1)+' MB';}
+function sendable(){return dropStatus?dropStatus.items.filter(i=>i.sendable):[];}
+function dropSig(){return sendable().map(i=>i.name+'|'+i.size+'|'+i.modified).sort().join('\n');}
+
+function startDesktop(){
+  $('drop-card').classList.remove('hidden'); $('od-card').classList.remove('hidden');
+  refreshOneDrive(); refreshDrop(true);
+  setInterval(refreshOneDrive,60000);   // also what restarts OneDrive if it quits
+  setInterval(()=>refreshDrop(true),15000);
+}
+
+/* ---- OneDrive ---- */
+async function refreshOneDrive(){
+  try{const r=await api('GET','/api/onedrive'); if(r.ok){odStatus=r.data; renderOneDrive(); if(odStatus.autoStarted)toast('OneDrive was not running, so it was started.');}}catch(e){}
+}
+function renderOneDrive(){
+  const s=odStatus, box=$('od-checks'), pill=$('od-pill'); if(!s)return;
+  box.replaceChildren();
+  if(s.error) box.append(el('div',{class:'note warn',text:s.error}));
+  s.checks.forEach(c=>box.append(el('div',{class:'chk-row'},el('span',{class:'dot '+c.status}),
+    el('div',{},el('div',{text:c.label}),el('div',{class:'fix',text:c.detail}),c.fix?el('div',{class:'fix',style:'color:var(--text)',text:'→ '+c.fix}):null))));
+  $('btn-od-start').classList.toggle('hidden',!s.canStart);
+  const lib=$('od-lib'); lib.classList.toggle('hidden',!s.libraryUrl); if(s.libraryUrl)lib.href=s.libraryUrl;
+  pill.classList.remove('hidden','ok','bad','dirty');
+  const map={ok:['ok','OneDrive ✓'],warn:['dirty','OneDrive: check'],fail:['bad','OneDrive: problem'],unsupported:['dirty','OneDrive: n/a'],unknown:['dirty','OneDrive: ?']};
+  const [cls,txt]=map[s.overall]||map.unknown; pill.classList.add(cls); pill.textContent=txt;
+}
+$('od-pill').onclick=()=>$('od-card').scrollIntoView({behavior:'smooth'});
+$('btn-od-refresh').onclick=refreshOneDrive;
+$('btn-od-start').onclick=async()=>{const r=await api('POST','/api/onedrive/start');if(!r.ok){toast((r.data&&r.data.error)||'Could not start OneDrive.');return;}odStatus=r.data;renderOneDrive();toast('OneDrive started. If it asks you to sign in, use your Sagamore account.');};
+
+/* ---- drop folder ---- */
+async function refreshDrop(autoOpen){
+  try{
+    const r=await api('GET','/api/drop'); if(!r.ok)return;
+    dropStatus=r.data; renderDropCard();
+    // "pops up next time the app is opened": on load (and while open) when there is something new to send.
+    const sig=dropSig();
+    if(autoOpen&&sig&&sig!==dropDismissed&&!(dlg&&dlg.open)&&!(runStatus&&runStatus.running)) openDrop();
+  }catch(e){}
+}
+function renderDropCard(){
+  if(!LOCAL||!dropStatus)return;
+  const n=sendable().length, other=dropStatus.items.length-n;
+  $('drop-path').textContent=dropStatus.folder;
+  $('drop-count').textContent=n?`${n} file${n>1?'s':''} waiting`:(other?'nothing sendable':'empty');
+  const pill=$('drop-pill'); pill.classList.toggle('hidden',!n); pill.textContent=`${n} file${n>1?'s':''} to send`;
+  $('btn-drop-send').disabled=!n||!!(runStatus&&runStatus.running);
+}
+$('drop-pill').onclick=()=>openDrop();
+$('btn-drop-send').onclick=()=>openDrop();
+$('btn-drop-open').onclick=async()=>{const r=await api('POST','/api/drop/open');if(r.ok&&!r.data.opened)toast('Open this folder yourself: '+r.data.folder);};
+
+/* Who can open a folder (from the config): the people whose effective access there is not "No access". */
+function audienceOf(path){
+  return people().map(p=>({p,role:P.effectiveAccess(cfg,_plan,path,p).role})).filter(x=>x.role)
+    .sort((a,b)=>(P.ROLE_RANK[b.role]||0)-(P.ROLE_RANK[a.role]||0)||(a.p.displayName||a.p.upn).localeCompare(b.p.displayName||b.p.upn));
+}
+function inheritSource(path){const e=_plan.find(x=>x.Path.toLowerCase()===path.toLowerCase());return (e&&e.Access)?path:inheritedFrom(path);}
+function folderLabel(dest,path){
+  if(path.toLowerCase()===dest.root.toLowerCase()) return dest.type==='Private'?'Client Files (top level)':'Files (top level)';
+  const rel=path.substring(dest.root.length+1);
+  return (LOCKED().includes(rel.split('/').pop().toLowerCase())?'🔒 ':'')+rel;
+}
+
+// Dialog state survives Back/Next so nothing the user picked is lost.
+let pick={files:new Set(),channel:'',folder:'',overwrite:false,ack:false,errors:[]};
+function openDrop(){
+  if(!dropStatus)return;
+  if(dlg&&dlg.open)return;
+  dlg=$('drop-dlg');
+  const names=new Set(sendable().map(i=>i.name));
+  pick.files=new Set([...names].filter(n=>pick.files.size===0||pick.files.has(n)));
+  if(!pick.files.size) names.forEach(n=>pick.files.add(n));
+  pick.ack=false; pick.errors=[];
+  stepWhere();
+  dlg.showModal();
+}
+function closeDrop(dismiss){if(dismiss)dropDismissed=dropSig();if(dlg&&dlg.open)dlg.close();}
+$('dlg-x').onclick=()=>closeDrop(true);
+$('drop-dlg').addEventListener('cancel',()=>{dropDismissed=dropSig();});   // Esc = "Not now"
+
+function blockers(){
+  if(dirty) return 'You have unsaved config changes. Save (or reload) the config first: files are sent using the saved config.';
+  if(runStatus&&runStatus.running) return 'Another command is running. Send when it finishes.';
+  if(dropStatus.error) return dropStatus.error;
+  if(/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(String((cfg.tenant||{}).clientId||''))) return 'The Sagamore app is not registered yet (tenant.clientId is the placeholder). Run ./scripts/Register-SagamoreApp.ps1 once, then send.';
+  return null;
+}
+
+/* Step 1: which files, which channel, which folder. */
+function stepWhere(){
+  const body=$('dlg-body'), foot=$('dlg-foot'); body.replaceChildren(); foot.replaceChildren();
+  $('dlg-title').textContent='Send files to Teams';
+  const items=dropStatus.items;
+  body.append(el('p',{class:'mini',style:'margin-bottom:8px',text:`From ${dropStatus.folder}`}));
+  body.append(el('div',{class:'files'},items.map(i=>{
+    const cb=el('input',{type:'checkbox',disabled:!i.sendable,checked:i.sendable&&pick.files.has(i.name),onchange:(e)=>{e.target.checked?pick.files.add(i.name):pick.files.delete(i.name);stepWhere();}});
+    return el('label',{class:i.sendable?'':'off',title:i.reason||i.name},cb,el('span',{class:'nm',text:(i.kind==='folder'?'📁 ':'📄 ')+i.name}),
+      i.sendable?el('span',{class:'mini',text:fmtSize(i.size)}):el('span',{class:'why',text:i.kind==='folder'?'folder: not uploaded':'in use'}));
+  })));
+  if(items.some(i=>!i.sendable)) body.append(el('div',{class:'note warn',text:items.filter(i=>!i.sendable).map(i=>`${i.name}: ${i.reason}`).join(' ')}));
+
+  const dests=dropStatus.destinations;
+  const chSel=el('select',{onchange:(e)=>{pick.channel=e.target.value;const d=dests.find(x=>x.channel===pick.channel);pick.folder=d?d.root:'';stepWhere();}},
+    el('option',{value:'',text:'Choose a channel…'}),
+    dests.map(d=>el('option',{value:d.channel,selected:d.channel===pick.channel,text:`# ${d.channel}${d.type==='Private'?'  (private client channel)':''}`})));
+  body.append(el('div',{class:'field'},el('label',{text:'Which Teams channel?'}),chSel));
+
+  const dest=dests.find(x=>x.channel===pick.channel);
+  if(dest){
+    if(!dest.folders.some(f=>f===pick.folder)) pick.folder=dest.root;
+    const fSel=el('select',{onchange:(e)=>{pick.folder=e.target.value;stepWhere();}},
+      dest.folders.map(f=>el('option',{value:f,selected:f===pick.folder,text:folderLabel(dest,f)})));
+    body.append(el('div',{class:'field'},el('label',{text:'Which folder in that channel?'}),fSel));
+    body.append(el('div',{class:'note',text:dest.type==='Private'
+      ?`Files appear in the "Client Files" tab of # ${dest.channel} (SharePoint: ${pick.folder}).`
+      :`Files appear in the Files tab of # ${dest.channel} (SharePoint: ${pick.folder}).`}));
+    const aud=audienceOf(pick.folder);
+    body.append(el('div',{class:'mini',style:'margin-top:8px',text:`Who can open files in this folder (${aud.length} ${aud.length===1?'person':'people'}):`}),
+      el('div',{class:'aud'},aud.length?aud.map(x=>el('div',{class:'acc-row'},el('span',{class:'who',text:`${x.p.displayName||x.p.upn} (${x.p.role})`}),badge(x.role))):el('div',{class:'mini',text:'Nobody listed in config.'})));
+    body.append(el('label',{class:'check'},el('input',{type:'checkbox',checked:pick.overwrite,onchange:(e)=>{pick.overwrite=e.target.checked;}}),
+      el('span',{text:'Replace files that already have the same name (the old copy stays in SharePoint version history). Otherwise they are skipped.'})));
+  }
+  if(!dests.length&&!dropStatus.error) body.append(el('div',{class:'note warn',text:'No Teams channels in the saved config.'}));
+  const why=blockers(); if(why) body.append(el('div',{class:'note warn',text:why}));
+
+  foot.append(el('button',{class:'btn',onclick:()=>closeDrop(true)},'Not now'),
+    el('button',{class:'btn',onclick:()=>$('btn-drop-open').click()},'Open drop folder'),
+    el('button',{class:'btn primary',disabled:!!why||!dest||!pick.files.size,onclick:()=>{pick.ack=false;stepConfirm();}},'Next →'));
+}
+
+/* Step 2: make the permission consequence explicit and require an acknowledgement before sending. */
+function stepConfirm(){
+  const body=$('dlg-body'), foot=$('dlg-foot'); body.replaceChildren(); foot.replaceChildren();
+  const dest=dropStatus.destinations.find(x=>x.channel===pick.channel);
+  const from=inheritSource(pick.folder), aud=audienceOf(pick.folder), n=pick.files.size;
+  $('dlg-title').textContent='Confirm permissions';
+  body.append(el('p',{style:'margin-bottom:10px'},`Send ${n} file${n>1?'s':''} to `,el('b',{text:'# '+dest.channel}),' › ',el('b',{text:folderLabel(dest,pick.folder)}),'.'));
+  body.append(el('div',{class:'note big'},
+    el('div',{text:`These files will inherit the permissions of ${from==='the library root'?'the document library':'"'+from+'"'}. They do not keep any permissions or sharing they had before${pick.overwrite?', and replaced files lose their existing sharing links':''}.`}),
+    el('div',{style:'margin-top:6px',text:'Exactly these people will be able to open them. Anyone not listed will not:'})));
+  body.append(el('div',{class:'aud'},aud.map(x=>el('div',{class:'acc-row'},el('span',{class:'who',text:`${x.p.displayName||x.p.upn} (${x.p.role})`}),badge(x.role)))));
+  body.append(el('ul',{class:'mini',style:'margin:8px 0 0 18px'},[...pick.files].sort().map(f=>el('li',{text:f}))));
+  if(pick.errors.length) body.append(el('ul',{class:'problems',style:'margin-top:8px'},pick.errors.map(e=>el('li',{text:e}))));
+  const send=el('button',{class:'btn primary',disabled:!pick.ack,onclick:doSend},`Send ${n} file${n>1?'s':''}`);
+  body.append(el('label',{class:'check',style:'margin-top:12px;color:var(--text)'},
+    el('input',{type:'checkbox',checked:pick.ack,onchange:(e)=>{pick.ack=e.target.checked;send.disabled=!pick.ack;}}),
+    el('span',{text:'I understand these files will take the permissions of this channel folder, and only the people listed above will be able to open them.'})));
+  body.append(el('p',{class:'mini',style:'margin-top:6px',text:'A Microsoft sign-in window may open. After upload, each file is checked to make sure it inherits, and your local copy moves to _Sent in the drop folder.'}));
+  foot.append(el('button',{class:'btn',onclick:()=>{pick.errors=[];stepWhere();}},'← Back'),send);
+}
+
+async function doSend(){
+  const why=blockers(); if(why){toast(why);return;}
+  const r=await api('POST','/api/drop/send',JSON.stringify({destination:pick.folder,files:[...pick.files],overwrite:pick.overwrite,acknowledged:pick.ack}));
+  if(!r.ok){pick.errors=(r.data&&r.data.errors&&r.data.errors.length)?r.data.errors:[(r.data&&r.data.error)||('Not sent ('+r.status+')')];stepConfirm();return;}
+  closeDrop(false); pick.files=new Set(); pick.errors=[];
+  runFrom=0; shownRunId=null; runStatus=r.data; renderRunner(); pollRun();
+  toast('Sending… progress is shown under "Apply changes".');
+}
 })();
 </script>
 </body>

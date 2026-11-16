@@ -386,6 +386,31 @@ function Get-SagamoreChannelPlan {
     return @($names | Where-Object { $k = $_.Channel.ToLower(); if ($seen.ContainsKey($k)) { $false } else { $seen[$k] = $true; $true } })
 }
 
+function Get-SagamoreDropDestinations {
+    <#
+        Where the desktop drop folder may send files: one entry per Teams channel in the channel plan.
+          @{ Channel; Type = 'Standard'|'Private'; Root; Folders = [string[]] }
+        Root     - the library folder the channel's files live in:
+                     private client channel -> Clients/<client>  (shown in the channel's "Client Files" tab)
+                     standard channel       -> <channel name> at the library root (where Teams puts it)
+        Folders  - Root plus every folder in the folder plan underneath it, parents first. Nothing outside the
+                   plan is offered, so a file can only land where the installer manages the permissions.
+        Derived purely from Get-SagamoreChannelPlan + Get-SagamoreFolderPlan, so it can never disagree with
+        them. The dashboard gets this list from the server; there is no JS copy to keep in parity.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $plan = @(Get-SagamoreFolderPlan -Config $Config)
+    foreach ($c in @(Get-SagamoreChannelPlan -Config $Config)) {
+        $root = if ($c.Folder) { ConvertTo-SagamorePath $c.Folder } else { ConvertTo-SagamorePath $c.Channel }
+        $under = @($plan | Where-Object { $_.Path -ieq $root -or $_.Path.ToLower().StartsWith($root.ToLower() + '/') } | ForEach-Object Path)
+        # The root is always offered, even when the plan does not list it (e.g. a standard channel whose
+        # folder only exists because Teams created it).
+        $folders = @($root) + @($under | Where-Object { $_ -ine $root })
+        [pscustomobject]@{ Channel = $c.Channel; Type = $c.Type; Root = $root; Folders = $folders }
+    }
+}
+
 function Resolve-SagamorePrincipal {
     <#
         Maps a config principal key to what SharePoint needs:
